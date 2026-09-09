@@ -10,7 +10,10 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.gateway
-    command: ["python", "-m", "stub.server", "--host", "0.0.0.0", "--port", "8001"]
+      # The `dev` target is the runtime image plus stub/. The stub is not in the
+      # installed package and not in the production image on purpose: it is an
+      # OpenAI-compatible server with no authentication at all.
+      target: dev
     # Not published to the host at all. The gateway reaches it by service name
     # on the compose network; nothing else has any business talking to it, which
     # is exactly the relationship vLLM and the gateway have in production.
@@ -21,6 +24,10 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.gateway
+      # Explicit, even though `default` now aliases it: a service that must not
+      # be the stub should say which image it wants rather than rely on stage
+      # ordering in another file.
+      target: runtime
     ports:
       # Loopback only. Same reasoning as the AI service: publishing on all
       # interfaces puts a dev-configured auth surface on the network.
@@ -33,6 +40,17 @@ services:
       API_KEY_PEPPER: local-dev-pepper-not-a-secret
       AUDIT_LOG_PATH: /app/logs/audit.jsonl
     volumes:
+      # PREREQUISITE: run `bash scripts/dev_key.sh` first.
+      #
+      # A read-only bind of a file that does not exist does not fail
+      # helpfully -- Docker creates a DIRECTORY at that path, and the gateway
+      # then tries to read a directory as JSON and comes up unable to
+      # authenticate anybody. The store is generated rather than committed
+      # because it is a per-environment credential registry, which is why
+      # `keys.json` is gitignored in the first place.
+      #
+      # The pepper below must match the one dev_key.sh minted with, or every
+      # key in the store fails to verify.
       - ./local-keys.json:/app/keys.json:ro
     depends_on:
       - stub

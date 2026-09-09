@@ -28,7 +28,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -f deploy/Dockerfile.gateway -t bkn301-inference:ci .
+      # --target runtime explicitly: this is the image that ships.
+      - run: docker build -f deploy/Dockerfile.gateway --target runtime -t bkn301-inference:ci .
+      # The dev target must also build, since compose depends on it.
+      - run: docker build -f deploy/Dockerfile.gateway --target dev -t bkn301-inference:ci-dev .
+      - name: assert the unauthenticated stub is not in the shipping image
+        run: |
+          if docker run --rm --entrypoint python bkn301-inference:ci -c 'import stub.server' 2>/dev/null; then
+            echo "::error::the stub -- an OpenAI server with no auth -- is in the runtime image"; exit 1
+          fi
       # The image must contain no compiler: the build stage exists precisely to
       # keep build-essential out of the runtime layer.
       - name: assert no compiler in the runtime image

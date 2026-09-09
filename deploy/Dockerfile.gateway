@@ -40,3 +40,33 @@ HEALTHCHECK --interval=20s --timeout=5s --start-period=10s --retries=3 \
 # One worker. The gateway is IO-bound (it forwards to a GPU it does not own), so
 # concurrency comes from async, not processes. Replicas are the scaling unit.
 CMD ["python", "-m", "uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Development-only target: the runtime image plus the fake upstream.
+#
+# `docker compose` builds this for its `stub` service. It is a separate target
+# rather than a few extra lines in `runtime` so that the stub -- an
+# OpenAI-compatible server with no authentication of any kind -- cannot reach a
+# deployed environment by accident.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM runtime AS dev
+USER root
+COPY stub/ ./stub/
+USER gateway
+CMD ["python", "-m", "stub.server", "--host", "0.0.0.0", "--port", "8001"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THIS STAGE MUST BE LAST, and it is not decoration.
+#
+# `docker build` with no `--target` builds the FINAL stage in the file. When
+# `dev` was last, a plain build produced the dev image -- and because `FROM`
+# inherits CMD, the gateway service came up running the unauthenticated stub on
+# port 8001 while reporting itself healthy. That is exactly the accident the
+# split was meant to prevent, introduced by the split itself.
+#
+# An alias stage pinned at the end makes the safe thing the default again:
+# `FROM runtime` carries runtime's CMD, USER, WORKDIR and HEALTHCHECK forward
+# unchanged, so `default` and `runtime` are the same image. Anything needing
+# the stub must now ask for it by name.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM runtime AS default

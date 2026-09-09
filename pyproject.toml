@@ -19,8 +19,26 @@ build-backend = "setuptools.build_meta"
 # Explicit, because auto-discovery refuses to guess when several top-level
 # directories exist (gateway/, stub/, tests/, deploy/, docs/) and fails the
 # build rather than picking one.
+#
+# `stub` is deliberately NOT listed. It is a development tool -- a fake,
+# entirely unauthenticated OpenAI server -- and it has no business inside the
+# distributed package, because everything installed here also lands in the
+# runtime image via `COPY --from=build /install`. The gateway image is the most
+# exposed component in the system; a shell in it should not find a server that
+# answers without credentials.
+#
+# Listing it also broke the image build outright: `deploy/Dockerfile.gateway`
+# copies only `gateway/` into the build stage, so setuptools failed with
+# "package directory 'stub' does not exist". Nobody caught it because this repo
+# has no remote yet, so the `image` job in .github/workflows/ci.yml has never
+# run.
+#
+# The stub stays importable in development because the repo root is on sys.path
+# for pytest (rootdir) and loadgen.py (explicit insert), and `python -m
+# stub.server` resolves from the working directory. The dev image copies the
+# directory in directly -- see the `dev` target in the Dockerfile.
 [tool.setuptools]
-packages = ["gateway", "gateway.auth", "gateway.routes", "gateway.upstream", "stub"]
+packages = ["gateway", "gateway.auth", "gateway.routes", "gateway.upstream"]
 
 [project]
 name = "bkn301-inference"
@@ -76,6 +94,20 @@ ignore = [
 # The stub deliberately binds a host from argv and returns canned data; the
 # security rules aimed at production request handling do not apply to it.
 "stub/*" = ["S104", "S311"]
+# Several tests must spawn real processes rather than use an in-process
+# transport, and S603/S607 fire on every one of them.
+#
+# The spawning is not incidental. `test_loadgen.py` has to prove that the load
+# generator's workers genuinely overlap -- the exact property the app repo's
+# bench harness lacks -- and an in-process ASGI transport serialises
+# differently from a socket, so it could make a sequential generator look
+# parallel. `test_pack_for_box.py` and `test_verify_box.py` are testing shell
+# scripts, which cannot be tested any other way.
+#
+# In every case the argv is this interpreter, a `shutil.which`-resolved bash,
+# or `git`, followed by literals from the test body. There is no untrusted
+# input anywhere near it, which is the condition S603 exists to check for.
+"tests/*" = ["S603", "S607"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

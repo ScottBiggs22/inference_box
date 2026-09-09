@@ -178,9 +178,23 @@ async def chat_completions(request: Request):
     created = int(time.time())
     cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
+    usage = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+
     if body.get("stream"):
+        # `stream_options.include_usage` is opt-in in the OpenAI protocol, and
+        # the gateway's per-key token budget (PRD §5.3) depends on it: without
+        # it a streamed request has no token counts and the audit record can
+        # only log zeros. Reproduced here so BOTH paths -- server-reported
+        # counts and the consumer's delta-counting fallback -- are testable
+        # without a GPU.
+        include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
         return StreamingResponse(
-            _stream(cid, created, body.get("model", STUB_MODEL), text),
+            _stream(cid, created, body.get("model", STUB_MODEL), text,
+                    usage if include_usage else None),
             media_type="text/event-stream",
         )
 
@@ -196,15 +210,12 @@ async def chat_completions(request: Request):
                 "finish_reason": "stop",
             }
         ],
-        "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-        },
+        "usage": usage,
     }
 
 
-async def _stream(cid: str, created: int, model: str, text: str):
+async def _stream(cid: str, created: int, model: str, text: str,
+                  usage: dict | None = None):
     """SSE in the OpenAI delta format, terminated by the literal [DONE].
 
     The gateway passes this through rather than buffering it, so the exact frame
@@ -227,6 +238,19 @@ async def _stream(cid: str, created: int, model: str, text: str):
             await asyncio.sleep(min(state.latency / 50.0, 0.05))
         yield frame({"content": word + " "})
     yield frame({}, finish="stop")
+    if usage is not None:
+        # The usage frame comes last and carries an EMPTY choices list. A
+        # consumer that assumes every frame has a choices[0] crashes on it,
+        # which is exactly the shape worth having a fixture for.
+        final = {
+            "id": cid,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [],
+            "usage": usage,
+        }
+        yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
 
 

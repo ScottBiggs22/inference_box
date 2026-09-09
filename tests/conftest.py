@@ -84,3 +84,57 @@ def client(key_store, audit_file, dead_upstream):
     app.dependency_overrides[get_key_store] = lambda: key_store
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def live_stub():
+    """A real `stub.server` subprocess on a free port. Returns a factory.
+
+    A subprocess rather than a TestClient, because what is under test in
+    `test_loadgen.py` is CONCURRENCY: an in-process ASGI transport would
+    serialise differently from a socket and could make a sequential load
+    generator look parallel. The one thing these tests must be able to prove is
+    that the workers really do overlap, so the transport has to be real.
+    """
+    import socket
+    import subprocess
+    import sys
+    import time as _time
+    from pathlib import Path
+
+    import httpx
+
+    procs: list[subprocess.Popen] = []
+
+    def _start(*extra_args: str) -> str:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        # S603: the argv is this interpreter plus literals from the test body.
+        # There is no untrusted input anywhere near it.
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-m", "stub.server", "--port", str(port), *extra_args],
+            cwd=Path(__file__).resolve().parent.parent,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        procs.append(proc)
+        base = f"http://127.0.0.1:{port}"
+        deadline = _time.time() + 30
+        while _time.time() < deadline:
+            if proc.poll() is not None:
+                raise RuntimeError(f"stub exited early with {proc.returncode}")
+            try:
+                if httpx.get(f"{base}/health", timeout=0.5).status_code == 200:
+                    return base
+            except Exception:  # noqa: BLE001 - still booting
+                _time.sleep(0.1)
+        raise RuntimeError("stub did not become healthy within 30s")
+
+    yield _start
+
+    for proc in procs:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()

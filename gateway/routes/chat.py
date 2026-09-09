@@ -100,9 +100,27 @@ async def chat_completions(
     # caller asking for more than they may have is served a shorter answer, not
     # an error, which is the friendlier behaviour for the same protection. One
     # 8k-context request costs what twenty short ones do (PRD §5.3).
+    #
+    # The parse is guarded, and it has to be: `int(requested)` on its own raises
+    # on `{"max_tokens": "abc"}` and on `{"max_tokens": {}}`, which turned a
+    # malformed request into a 500 from the one layer whose entire job is
+    # rejecting malformed requests before the GPU sees them. A non-positive
+    # value is caught in the same place, because it is not a smaller request --
+    # vLLM has no sensible reading of it, and clamping UP to the ceiling would
+    # be the opposite of what the caller asked.
     requested = body.get("max_tokens")
-    if requested is None or int(requested) > settings.MAX_COMPLETION_TOKENS:
+    if requested is None:
         body["max_tokens"] = settings.MAX_COMPLETION_TOKENS
+    else:
+        try:
+            wanted = int(requested)
+        except (TypeError, ValueError):
+            raise _reject(status.HTTP_400_BAD_REQUEST,
+                          "max_tokens_invalid", principal, model, started) from None
+        if wanted < 1:
+            raise _reject(status.HTTP_400_BAD_REQUEST,
+                          "max_tokens_invalid", principal, model, started)
+        body["max_tokens"] = min(wanted, settings.MAX_COMPLETION_TOKENS)
 
     streaming = bool(body.get("stream"))
     upstream = pool.pick()

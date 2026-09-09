@@ -75,7 +75,29 @@ memory budget. See **§4.4** — it is the most important section in this revisi
 ### 3.1 Verified model facts
 
 Qwen3-8B: 8.19B params, 36 layers, 32 query heads, **8 KV heads**, head_dim 128,
-vocab 151,552, **32,768 native context** (131,072 with YaRN).
+~~vocab 151,552, **32,768 native context** (131,072 with YaRN)~~.
+
+> **Verified against the real `config.json` 2026-09-09.** The geometry the
+> memory budget depends on is exactly right — 36 layers, 32 query heads, 8 KV
+> heads, head_dim 128 — and re-deriving §3.3's KV cost from it reproduces
+> 144 KiB/token and ~107,770 tokens for a 14.8 GiB budget. **Two of the
+> secondary figures were wrong:**
+>
+> | Field | This document said | `Qwen/Qwen3-8B-AWQ` config.json |
+> |---|---|---|
+> | `vocab_size` | 151,552 | **151,936** |
+> | `max_position_embeddings` | 32,768 | **40,960** |
+>
+> The vocabulary figure has three candidates in circulation and they measure
+> different things, which is why it kept coming out differently: **151,936** is
+> the model's embedding-matrix width (padded), **151,643** is the tokenizer's
+> actual token count (§6.1 B4's measurement), and **151,552** matches neither
+> — it is a Qwen2.5-era number that travelled into this document. Nothing here
+> depends on it; the correction exists so nobody re-derives from it.
+>
+> The context figure does matter in one place: §7 Phase 5 says "Qwen3 needs
+> YaRN above 32k". The native window in this release is **40,960**, so YaRN is
+> only needed beyond that.
 
 KV cache cost per token, FP16/BF16:
 
@@ -178,7 +200,8 @@ The documented caveats are what rule it out for the server:
 - *"GGUF support in vLLM is highly experimental and under-optimized at the
   moment, it might be incompatible with other features."*
 - Tokenizer conversion from GGUF is *"time-consuming and unstable, especially for
-  some models with large vocab size"* — Qwen3's vocab is 151,552. Mitigable with
+  some models with large vocab size"* — Qwen3's vocab is ~~151,552~~ **151,936**
+  (see the §3.1 correction; the argument is unaffected). Mitigable with
   `--tokenizer Qwen/Qwen3-8B`, which the docs recommend, but it is a workaround.
 - GGUF's dequantisation kernels are not the tuned Marlin INT4 path AWQ uses on
   Ampere, so it is slower than AWQ at a similar footprint.
@@ -583,6 +606,40 @@ the places where the current design assumes a *local, single-threaded* model.
 | B3 | **Qwen3 thinking mode will empty every answer.** Qwen3-8B is a hybrid reasoning model; the default chat template emits `<think>…</think>`. `FAQ_MAX_TOKENS = 160` would be consumed entirely by an unterminated think block, `generate()` returns empty text, and the facade maps empty → `("", True)` → degraded. | `chat.py:157`, `llm_engine.py:274` | **The entire app would silently fall back to RAG-only mode** with no error, only the degraded banner. **Fix:** `chat_template_kwargs: {"enable_thinking": false}`. Raising the token allowance instead is *not* an alternative — the trace still reaches `_cap_answer(text, 800)`, which truncates at 800 chars and would ship the reasoning as the answer. A `<think>` stripper is required either way, and once present, disabling is free. Two things to verify in Phase 1: whether `enable_thinking: false` overrides a user typing `/think` in their query (Qwen3 parses that as a soft switch), and that the `presence_penalty` mapping does not silently drop. |
 | B4 | ~~**Tokenizer mismatch.**~~ **RESOLVED 2026-09-09, and the stated impact was wrong.** Original claim: `TOKENIZER_DIR` points at a vendored Qwen2.5 tokenizer, Qwen3's vocab is 151,552 and differs, so "wrong counts silently mis-size every chunk". **Measured: they do not.** Both tokenizers report `vocab_size` **151643**, and token IDs were byte-identical across **all 349 distinct strings** in `chat_interactions.log` plus all five extraction fixtures — zero count differences on English, Arabic, hex-dense and money-dense text. Chunk budgets were never mis-sized. What genuinely differs is **four added control tokens** — `<think>`, `</think>`, `<tool_response>`, `</tool_response>` — which Qwen3 encodes as **one token each** and Qwen2.5 splits into three or four. Narrow, but it lands precisely on the B3 reasoning-block surface. **Fixed** by vendoring both and selecting from `LLM_BACKEND` (`config.py`), since the right tokenizer is a property of the model served, not of the service. Pinned by `tests/test_tokenizer.py::TestQwen3Divergence` and `::TestBackendSelection`. | `config.py` | — |
 
+> ### Correction — B4's fix is real but is not "vendored"
+>
+> **Found 2026-09-09 while preparing the rented box.** B4 above, and the
+> handoff, both describe the two tokenizers as *vendored*. They are not, in the
+> sense that word implies:
+>
+> ```
+> $ git ls-files services/bkn301-ai-service/models/
+> (nothing)
+> ```
+>
+> Both directories are **gitignored and untracked** — 11 MB for Qwen2.5, 15 MB
+> for Qwen3, present only on the laptop that downloaded them. The `.gitignore`
+> comment says they are "fetched by start.sh alongside the GGUF", but no script
+> in the repo references `qwen3-tokenizer`. So B4's fix:
+>
+> - does not reproduce from a clean clone;
+> - cannot reach CI, DevOps, a container image, or a rented box;
+> - is pinned by `tests/test_tokenizer.py`, which therefore passes only on a
+>   machine where the directory happens to already exist.
+>
+> Not urgent — the rented box no longer runs the app at all (§4.8), so nothing
+> in Phase 1 is blocked. But "vendored" should mean committed, fetched by a
+> pinned script with a checksum, or baked into the image, and right now it means
+> none of those. Phase 3 needs one of them chosen before `LLM_BACKEND=vllm`
+> runs anywhere but this laptop.
+>
+> **Related trap, worth fixing at the same time.** `.env.example:65` hardcodes
+> `TOKENIZER_DIR=./models/qwen2.5-tokenizer`, and an explicit `TOKENIZER_DIR`
+> **overrides** the `LLM_BACKEND`-based selection (`config.py:141`). Anyone who
+> copies the example to `.env` — which is exactly what an example file invites —
+> silently gets the Qwen2.5 tokenizer while serving Qwen3, losing precisely the
+> single-token `<think>` handling that was B4's only genuine finding.
+
 ### 6.2 Security gaps in the app
 
 > **Re-verified against `main` on 2026-09-08**, after rebasing onto `afbf0c5`.
@@ -702,7 +759,8 @@ Two consequences to carry forward:
   roughly 1/N hit rate on first contact. If that materially hurts, the fix is a
   shared cache in Redis — which is already a dependency — not in-process threads.
 
-Also note for the `vllm_remote` backend: `LLMEngine.__init__` fatally degrades
+Also note for the `vllm` remote backend (`openai_http.py`, not the
+`vllm_remote.py` this document originally named): `LLMEngine.__init__` fatally degrades
 when `os.path.exists(settings.TEXT_MODEL_PATH)` is false (`llm_engine.py:76`).
 A remote backend has no local model file and must bypass that check.
 
@@ -832,9 +890,20 @@ oversized prompt, revoked key, expired JWT, concurrency starvation) all pass.
 - [ ] **B1/B2: no app change.** The lock, `EXTRACTION_LIMITER`, and `WORKERS=1`
       all stay (§6.4). Instead, specify the replica count as a capacity
       requirement to DevOps: N replicas ⇒ N concurrent requests, so N ≥ 5.
-- [ ] `app/core/llm_backends/vllm_remote.py` implementing the protocol.
+- [x] ~~`app/core/llm_backends/vllm_remote.py` implementing the protocol.
       `LLM_BACKEND=vllm` in `_build_backend`. Bypass the
-      `os.path.exists(TEXT_MODEL_PATH)` startup check (§6.4).
+      `os.path.exists(TEXT_MODEL_PATH)` startup check (§6.4).~~ **Done
+      2026-09-09, under a different filename.** It shipped as
+      `app/core/llm_backends/openai_http.py` (class `OpenAIHttpBackend`,
+      `name = "vllm"`), not `vllm_remote.py` — there is no file by that name and
+      searching for one finds nothing. Wired into `_build_backend`
+      (`llm_engine.py:53-71`), with the `TEXT_MODEL_PATH` bypass at
+      `llm_engine.py:102-112` and remote-aware `status()` at `:204-212`, so
+      `LLM_BACKEND=vllm` works end to end in the app and not only in the bench
+      script. **One gap remains:** it hardcodes `"stream": False`
+      (`openai_http.py:177`), so there is no streaming path and no TTFT
+      available from the app — which is why C2's streaming work in Phase 4 is
+      not merely a product decision but also missing plumbing.
 - [x] ~~**B3:** `enable_thinking: false` + `<think>` stripper.~~ **Done
       2026-09-09**, and moved earlier than planned: Phase 1 benchmarks Qwen3 on
       the rented box, and without B3 every answer returns empty and the whole run

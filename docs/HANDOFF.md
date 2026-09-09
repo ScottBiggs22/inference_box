@@ -1,4 +1,4 @@
-# Handoff — state of play as of 2026-09-09
+# Handoff — state of play as of 2026-09-09 (rev 2)
 
 Written to carry context into a new session working inside this repo. The PRD
 (`docs/INFERENCE_SERVICE_PRD.md`) remains the design source of truth; this
@@ -125,6 +125,111 @@ supply" → widget. **Any prompt change is a routing change.**
 
 ---
 
+## 5a. Phase 1 toolkit — built, and six more documented claims that were wrong
+
+Phase 1 is now blocked only on a booked GPU. Everything the box session needs
+exists, was tested against the stub, and the runbook it follows has been
+rewritten around what the code actually does.
+
+**Test/build state:** **107 gateway tests** pass (up from 58), `ruff` clean,
+both image targets build, and the compose stack was verified end to end — auth,
+`/readyz`, a streamed completion carrying a usage frame, and a 400 on a
+malformed request. `baas-poc-templates` was **not touched**; its Phase 0
+changes are still uncommitted.
+
+### Built
+
+| Artefact | What it is for |
+|---|---|
+| `scripts/pack_for_box.sh` | The transfer. Temp-index build so uncommitted work ships, deny-list on top of gitignore, printed manifest, shape-aware credential scan. Refuses to run against the app repo. |
+| `scripts/loadgen.py` | The concurrency instrument. Per-user decode tok/s and TTFT p50/p95 at 1/3/5/8, 8k-shaped context, `stream_options.include_usage`. Prints the R1 gate verdict itself. |
+| `scripts/b3_probe.py` | Seven-case matrix answering whether `/think` overrides `enable_thinking: false`. Sends the app's exact wire payload without the app. |
+| `scripts/dev_key.sh` | Mints the key store compose needs. |
+| `scripts/verify_box.sh` | Hardened. Now catches `data/`, `knowledge/`, `*.gguf` and tokenizer dirs, fails on >1 GPU, and has `--self-test` and `--scan-only`. |
+| `docs/PHASE1_RESULTS.md` | Pre-cut slots for every measurement, so the paid session is fill-in-the-blanks. |
+| `docs/VAST_AI_RUNBOOK.md` rev 2 | Rewritten. See its "What changed in rev 2". |
+
+### The findings, in order of what they would have cost
+
+**F1 — the runbook shipped the wrong app tree.** `git archive
+HEAD:services/bkn301-ai-service` predated every uncommitted Phase 0 change,
+including untracked `openai_http.py`. A box built from it had no
+`--backend vllm`, so the benchmark could not run and B3 could not be confirmed.
+
+**F2 — "tracked files only" was not the safety guarantee it read as.** Of the
+AI service's 2.4 MB tracked payload, **1.2 MB was real platform content**:
+`data/pending_knowledge.json` (40 records of verbatim `extractedText`;
+`data/` is not gitignored at all) and `knowledge/.faiss_index.{json,bin}` (182
+verbatim chunks plus their embeddings). `verify_box.sh` checked for none of
+them. **Tracked is not the same as safe.**
+
+Deeper: the eval suite calls the real `chat_rag`, which retrieves from the real
+knowledge base and injects the chunks into the prompt — so real content travels
+in the *request body* regardless of how the code arrived. Resolution: **the app
+repo does not go on a rented box at all.** Eval quality moves to the OCI card,
+which PRD §4.8 already names as the only place numbers may come from.
+
+**F3 — the harness could not produce any Phase 1 headline number.**
+`bench_llm_backends.py` has no concurrency support whatsoever, so "run 1/3/5/8
+in parallel" was uncarryable. It never measures TTFT and cannot
+(`openai_http.py:177` hardcodes `"stream": False`), and its `decode_tok_s`
+divides completion tokens by whole-request latency — prefill and decode
+conflated, not comparable to §3.3's ~48 tok/s. Hence `loadgen.py`.
+
+**F4 — `verify_box.sh` would have hard-failed on its first run.** Its
+credential scan was `grep -rl 'sk-ant-'`, and `tests/test_auth.py` deliberately
+contains `"sk-ant-something"` as a malformed-credential fixture. The moment
+this repo reached the box, step one exited 1 saying an Anthropic key was
+present, under a banner reading "do not benchmark this box". Now shape-aware
+(20+ chars of key material after the prefix), with no filename exclusions to
+maintain, and a `--self-test` that plants every decoy. Confirmed against the
+real tree: 5 files matched the old pattern, 0 match the new one.
+
+**F5 — the image build was broken, and CI has never run.**
+`pyproject.toml` declared `stub` as a package while
+`deploy/Dockerfile.gateway` copied only `gateway/` into the build stage, so
+`docker build` failed with `package directory 'stub' does not exist`. The
+`image` job in `.github/workflows/ci.yml` would have caught it, but this repo
+**has no remote**, so that workflow has never executed. The README said the
+compose path worked; it could not have. Fixed by dropping `stub` from the
+distribution (it is a dev tool, and an unauthenticated server has no business
+in the shipping image) and adding a `dev` target that carries it.
+
+Worth recording how that fix failed first: making `dev` the last stage meant
+`docker build` with no `--target` built *it*, and because `FROM` inherits
+`CMD`, the gateway container came up running the unauthenticated stub while
+reporting itself healthy. A trailing `FROM runtime AS default` alias makes the
+safe image the default again. CI now builds both targets and asserts
+`import stub` fails in the shipping one.
+
+**F6 — two PRD §3.1 figures were wrong; the load-bearing ones were right.**
+Verified against the real `Qwen/Qwen3-8B-AWQ` `config.json`. The geometry the
+memory budget depends on is exact — 36 layers, 8 KV heads, head_dim 128 →
+144 KiB/token, and a 14.8 GiB budget is ~107,770 tokens, consistent with
+§3.3's "~105,000". But `vocab_size` is **151,936** (not 151,552) and
+`max_position_embeddings` is **40,960** (not 32,768). Three vocabulary figures
+were in circulation because they measure different things: 151,936 is the
+padded embedding width, 151,643 is the tokenizer's token count (B4's
+measurement), and 151,552 matches neither. Corrected in place; §7 Phase 5's
+"YaRN above 32k" should read 40,960.
+
+Also: the model revision is now pinned to a real hash
+(`4da05a8edb55c6046cce958586c33b61da07bb79`) rather than `<COMMIT_HASH>`, and
+the repo is safetensors-only with no pickle — PRD §5.4 item 5 satisfied at the
+source.
+
+**Smaller, fixed:** `chat.py`'s unguarded `int(max_tokens)` returned 500 from
+the validation layer on `{"max_tokens": "abc"}` and let a negative value
+through unclamped (now 400 `max_tokens_invalid`, with tests); compose mounted a
+`local-keys.json` that did not exist. **Recorded, not fixed:** PRD Phase 3's
+`vllm_remote.py` shipped as `openai_http.py` and the checkbox was never ticked;
+the "vendored" Qwen3 tokenizer is gitignored, untracked and has no fetch script,
+so B4's fix does not reproduce from a clean clone; and `.env.example:65`
+hardcodes `TOKENIZER_DIR=./models/qwen2.5-tokenizer`, which overrides the
+`LLM_BACKEND` selection and silently undoes B4.
+
+---
+
 ## 6. What is deliberately not built
 
 Gateway, all PRD §7 Phase 2. Seams exist for each:
@@ -145,20 +250,30 @@ published), **S7–S9**. Plus E1–E3 above.
 
 ## 7. Next actions, in order
 
-1. **Book the vast.ai A10** and follow `docs/VAST_AI_RUNBOOK.md`. Run
-   `scripts/verify_box.sh` first and record its output.
+1. **Book the vast.ai A10** and follow `docs/VAST_AI_RUNBOOK.md` **rev 2**.
+   Transfer with `scripts/pack_for_box.sh` — read the manifest it prints — then
+   run `scripts/verify_box.sh` *before pulling weights* and paste its output
+   into `docs/PHASE1_RESULTS.md` §1. Do **not** transfer the app repo (§5a F2).
 2. **The single highest-value measurement** is vLLM's reported KV cache blocks.
    Every capacity figure in PRD §3.3 is *calculated, not measured*, and that
    number confirms or refutes the ~105,000-token AWQ budget the whole plan rests
    on.
 3. **Cold-start time** → sets `startupProbe.failureThreshold` in
    `deploy/k8s/probes.yaml`, currently a placeholder.
-4. **tok/s per user at 1/3/5/8 concurrent** — report per level, not aggregate.
-   This is a procurement input; DevOps sizes GPU counts off it. Flag it as a
-   provisional baseline to be re-confirmed on the OCI card.
-5. **Confirm B3 on real Qwen3**, including whether a user typing `/think`
-   overrides `enable_thinking: false`.
-6. Then Phase 2 gateway work from §6.
+4. **tok/s per user at 1/3/5/8 concurrent** — `scripts/loadgen.py`, run **on the
+   box** so the tunnel is not in the TTFT. Per level, not aggregate. This is a
+   procurement input; the script writes the provisional-baseline caveat into its
+   own output header so it survives a copy-paste.
+5. **Confirm B3 on real Qwen3** with `scripts/b3_probe.py`, including whether a
+   user typing `/think` overrides `enable_thinking: false`. Run it twice —
+   gateway and `--direct` — because a disagreement means the gateway is dropping
+   `chat_template_kwargs` in passthrough and B3's fix is broken in production
+   while every local test stays green.
+6. Then Phase 2 gateway work from §6, in dependency order:
+   **`/metrics` → breaker + health routing → budgets + caps → mTLS.** `/metrics`
+   first because both the breaker and `PROBE_CONTRACT.md` §4's wedge detection
+   consume it; budgets after the streamed token counts they need, which now work
+   end to end through the SSE passthrough.
 
 **Still blocking, and not ours:** PRD §8 Q1 — whether Azure staging is a
 full-card A10. `NVadsA10_v5` starts at one-sixth of a card with a 4 GiB frame

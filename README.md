@@ -62,8 +62,21 @@ curl -H "Authorization: Bearer $KEY" http://127.0.0.1:8080/v1/models
 Or the whole stack in containers, with no local Python at all:
 
 ```bash
+bash scripts/dev_key.sh          # mints deploy/local-keys.json — do this FIRST
 docker compose -f deploy/docker-compose.yml up --build
 ```
+
+`dev_key.sh` is a prerequisite, not a convenience. Compose bind-mounts
+`deploy/local-keys.json` read-only, and Docker's response to a read-only bind of
+a missing file is to create a *directory* at that path — after which the gateway
+comes up unable to authenticate anybody. The store is generated rather than
+committed because it is a per-environment credential registry, which is why
+`keys.json` is gitignored in the first place.
+
+Two build targets, and the distinction matters: `runtime` is the shipping image,
+`dev` is `runtime` plus `stub/`. The stub is an OpenAI-compatible server with no
+authentication of any kind, so it is neither in the installed package nor in the
+image that deploys. CI asserts it.
 
 The stub can reproduce the failure modes the gateway has to survive:
 
@@ -87,8 +100,14 @@ gateway/
   upstream/client.py replica pool, streaming passthrough
   audit.py           metadata only — never prompt text
 stub/server.py       the no-GPU development upstream
-deploy/              Dockerfile, compose, k8s probe config
-docs/                the PRD, and the probe contract for DevOps
+scripts/
+  pack_for_box.sh    the audited, data-free transfer to a rented box
+  verify_box.sh      first-boot GPU + data-hygiene gate (has --self-test)
+  loadgen.py         per-user tok/s and TTFT at 1/3/5/8 concurrent
+  b3_probe.py        does /think override enable_thinking: false?
+  dev_key.sh         mint a local dev key for the compose path
+deploy/              Dockerfile (runtime + dev), compose, k8s probe config
+docs/                the PRD, the probe contract, the rented-box runbook
 ```
 
 ---
@@ -122,17 +141,29 @@ consuming end (PRD §6.3 C2).
 
 The first slice stops short of these deliberately. They are PRD §7 Phase 2:
 
-- per-key token budgets and concurrency caps — the record fields and the seam exist
-- circuit breaker and health-aware routing — the router interface exists
-- mTLS gateway→vLLM
-- `/metrics` beyond the stub's
+In the order they will land, which is dependency order rather than the order
+§7 lists them:
+
+1. **`/metrics`** — `prometheus-client` is already a dependency with no
+   endpoint. Both the breaker and `PROBE_CONTRACT.md` §4's wedge detection
+   consume it, so it comes first.
+2. **Circuit breaker and health-aware routing** — `UpstreamPool.pick()` is
+   round-robin and `health()` is not wired into the router.
+3. **Per-key token budgets and concurrency caps** — `ApiKeyRecord` already
+   carries `token_budget` and `max_concurrency`. These need real streamed token
+   counts, and `stream_options.include_usage` now works end to end through the
+   SSE passthrough, so the plumbing is in place.
+4. **mTLS gateway→vLLM.**
 
 ---
 
 ## Status
 
-Phase 0 complete; Phase 1 waits on a GPU. `ruff check . && pytest` is green
-(58 tests), and the stack has been verified end to end against the stub.
+Phase 0 complete. The Phase 1 toolkit is built and Phase 1 waits only on a
+booked GPU. `ruff check . && pytest` is green (**107 tests**), both image
+targets build, and the compose stack has been verified end to end — auth,
+`/readyz`, a streamed completion with a usage frame, and a 400 on a malformed
+request.
 
 **Start here:**
 
@@ -140,6 +171,7 @@ Phase 0 complete; Phase 1 waits on a GPU. `ruff check . && pytest` is green
 |---|---|
 | `docs/HANDOFF.md` | Current state — read first. What is done, which PRD claims did not survive contact with the code, and the app defects eval calibration turned up. |
 | `docs/INFERENCE_SERVICE_PRD.md` | Design source of truth (rev 3), with in-place corrections. |
-| `docs/VAST_AI_RUNBOOK.md` | Getting this onto a rented A10 for Phase 1. |
+| `docs/VAST_AI_RUNBOOK.md` | Getting this onto a rented A10 for Phase 1 (rev 2). |
+| `docs/PHASE1_RESULTS.md` | Where the measurements go. Pre-cut slots, so the paid session is fill-in-the-blanks. |
 | `docs/PROBE_CONTRACT.md` | The probe design, extracted for DevOps. |
 | `docs/NEXT_SESSION_PROMPT.md` | Paste-ready prompt for a fresh session in this repo. |
