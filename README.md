@@ -133,3 +133,13 @@ The first slice stops short of these deliberately. They are PRD §7 Phase 2:
 
 Phase 0 complete; Phase 1 waits on a GPU. `ruff check . && pytest` is green
 (58 tests), and the stack has been verified end to end against the stub.
+
+**Start here:**
+
+| Doc | What it is |
+|---|---|
+| `docs/HANDOFF.md` | Current state — read first. What is done, which PRD claims did not survive contact with the code, and the app defects eval calibration turned up. |
+| `docs/INFERENCE_SERVICE_PRD.md` | Design source of truth (rev 3), with in-place corrections. |
+| `docs/VAST_AI_RUNBOOK.md` | Getting this onto a rented A10 for Phase 1. |
+| `docs/PROBE_CONTRACT.md` | The probe design, extracted for DevOps. |
+| `docs/NEXT_SESSION_PROMPT.md` | Paste-ready prompt for a fresh session in this repo. |

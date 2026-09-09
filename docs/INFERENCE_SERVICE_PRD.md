@@ -86,11 +86,15 @@ KV cache cost per token, FP16/BF16:
 
 So one 8k-context sequence costs **1.125 GiB** of KV cache, and 4k costs 576 MiB.
 
-> **Correction to carry into the app repo:** `config.py:36-38` documents KV cost
+> **Correction to carry into the app repo:** ~~`config.py:36-38` documents KV cost
 > as "36 layers x 2 KV heads x 128 head dim x 2 bytes" ≈ 36 KB/token. That is
 > Qwen2.5-1.5B's geometry (2 KV heads), which is the model in the repo today.
 > Qwen3-8B has 8 KV heads — **4× the per-token cost**. Anyone sizing a context
-> window from that comment will be off by 4×.
+> window from that comment will be off by 4×.~~
+> **Done 2026-09-09.** `config.py`'s `LLM_CTX_SIZE` comment now gives both
+> geometries side by side, names the model each belongs to, and notes that the
+> setting is advisory under the vllm backend since `--max-model-len` is
+> server-side (§6.3 C5).
 
 ### 3.2 A10 constraints
 
@@ -577,7 +581,7 @@ the places where the current design assumes a *local, single-threaded* model.
 | B1 | **The app can only ever have one request in flight — and infra cannot fix that.** `LLMEngine._lock` is an `RLock` held *around* `self._backend.generate(...)`, so for a remote backend the HTTP call happens inside the lock. A load balancer can only distribute requests it has received; if the client emits one at a time, there is never a second request to split by card capacity. | `llm_engine.py:70,261,269` | R2 asks for 3–5 concurrent. The symptom is not slowness but silent quality loss: `max_wait_sec` defaults to 30s, and on timeout `generate()` returns `("", True)` → a RAG-only answer. At ~10s per generation, user 2 waits and is served; users 4–5 wait 30s and get a non-LLM answer. **Resolution: scale AI-service replicas, do not add in-process concurrency** — see §6.4. |
 | B2 | **`EXTRACTION_LIMITER = CapacityLimiter(1)`** serialises extraction across `/assets` and `/media`. | `llm_engine.py:35` | Same root cause, same resolution — one in-flight extraction per replica is correct; add replicas. |
 | B3 | **Qwen3 thinking mode will empty every answer.** Qwen3-8B is a hybrid reasoning model; the default chat template emits `<think>…</think>`. `FAQ_MAX_TOKENS = 160` would be consumed entirely by an unterminated think block, `generate()` returns empty text, and the facade maps empty → `("", True)` → degraded. | `chat.py:157`, `llm_engine.py:274` | **The entire app would silently fall back to RAG-only mode** with no error, only the degraded banner. **Fix:** `chat_template_kwargs: {"enable_thinking": false}`. Raising the token allowance instead is *not* an alternative — the trace still reaches `_cap_answer(text, 800)`, which truncates at 800 chars and would ship the reasoning as the answer. A `<think>` stripper is required either way, and once present, disabling is free. Two things to verify in Phase 1: whether `enable_thinking: false` overrides a user typing `/think` in their query (Qwen3 parses that as a soft switch), and that the `presence_penalty` mapping does not silently drop. |
-| B4 | **Tokenizer mismatch.** `TOKENIZER_DIR` points at a vendored Qwen2.5 tokenizer; Qwen3's vocab is 151,552 and differs. | `config.py:67` | Token counts drive `intelligent_extractor._compute_doc_budget` chunk sizing and the context budgets. Wrong counts silently mis-size every chunk. **Fix:** vendor Qwen3's tokenizer; `tokenizer_source()` already surfaces which is loaded. |
+| B4 | ~~**Tokenizer mismatch.**~~ **RESOLVED 2026-09-09, and the stated impact was wrong.** Original claim: `TOKENIZER_DIR` points at a vendored Qwen2.5 tokenizer, Qwen3's vocab is 151,552 and differs, so "wrong counts silently mis-size every chunk". **Measured: they do not.** Both tokenizers report `vocab_size` **151643**, and token IDs were byte-identical across **all 349 distinct strings** in `chat_interactions.log` plus all five extraction fixtures — zero count differences on English, Arabic, hex-dense and money-dense text. Chunk budgets were never mis-sized. What genuinely differs is **four added control tokens** — `<think>`, `</think>`, `<tool_response>`, `</tool_response>` — which Qwen3 encodes as **one token each** and Qwen2.5 splits into three or four. Narrow, but it lands precisely on the B3 reasoning-block surface. **Fixed** by vendoring both and selecting from `LLM_BACKEND` (`config.py`), since the right tokenizer is a property of the model served, not of the service. Pinned by `tests/test_tokenizer.py::TestQwen3Divergence` and `::TestBackendSelection`. | `config.py` | — |
 
 ### 6.2 Security gaps in the app
 
@@ -587,13 +591,51 @@ the places where the current design assumes a *local, single-threaded* model.
 >
 > | | Status |
 > |---|---|
-> | **S2** loopback bind | ✅ Fixed on main (`c98d2f9`) |
+> | **S2** loopback bind | ✅ Fixed on main (`c98d2f9`) — but see the S10 correction |
 > | **S4** plaintext logs | ✅ Largely fixed on main (`0f13cac`) — content masked; rotation still open |
-> | **S10** compose unreachable | ⚠️ **New**, a side effect of the S2 fix |
-> | **S1** live Anthropic key | ❌ Still open — `.env` still contains it |
+> | **S1** live Anthropic key | ✅ **Closed 2026-09-09.** See correction (a) below |
+> | **S5** no `.dockerignore` | ✅ **Fixed 2026-09-09.** Build context 5.4 GB → 1.32 MB |
+> | **S10** compose publish | ✅ **Fixed 2026-09-09**, but its diagnosis was wrong — see correction (b) |
 > | **S3** cache key missing `role` | ❌ Still open — `_cache_key` unchanged |
-> | **S5** no `.dockerignore` | ❌ Still open |
+> | **S6** Redis unauthenticated + published | ❌ Still open (Phase 4) |
 > | **S9** dev CORS | ❌ Still open (dev-only, fine for now) |
+>
+> ---
+>
+> ### Correction (a) — S1: there was no key in `.env`
+>
+> Verified 2026-09-09 while executing Phase 0. `services/bkn301-ai-service/.env`
+> is **2 bytes** (`# `) with zero `KEY=` assignments. `ANTHROPIC_API_KEY` appears
+> nowhere in the service; there is no Anthropic SDK in `requirements.txt`, no
+> `load_dotenv()` call, and no `env_file:` in compose — so **`.env` was inert**:
+> nothing read it. It was never committed. (The `sk-ant-` matches in
+> `ConfigController.cs` history are `body.ApiKey.StartsWith("sk-ant-")`, a prefix
+> validation check, not a key.)
+>
+> The key was independently rotated at the console. S1 closes. The residual
+> defect — that `.env` was a trap, gitignored and unread with no example file, so
+> a future secret would silently fail to load *and* bake into the image — is
+> addressed by the new `.env.example` and by compose now reading `env_file`.
+>
+> ### Correction (b) — S10's end state was right, its diagnosis was not
+>
+> S10 below claims the containerised service "binds the *container's* loopback
+> and is unreachable through the published port". It does not.
+> **`Dockerfile:26` launches `main:app` as an ASGI target with `--host 0.0.0.0`
+> hardcoded**, so `main.py:112`'s `if __name__ == "__main__":` never runs and
+> `main.py:129-135`'s `uvicorn.run(host=settings.HOST)` is dead code in the
+> container. `settings.HOST` is irrelevant there.
+>
+> The consequence is the inverse of what S10 describes, and worse: the compose
+> path was never broken, it was **exposed** — `docker-compose.yml:50` published
+> `"8000:8000"` on all host interfaces in front of a service with no
+> authentication on any endpoint. The `c98d2f9` S2 fix never reached the
+> container path at all.
+>
+> Both prescribed changes still landed, but with their roles reversed: narrowing
+> the publish to `"127.0.0.1:8000:8000"` was the entire fix, and `HOST: 0.0.0.0`
+> in `environment:` is a **no-op today**, kept only as a belt for anyone running
+> `python main.py` inside the container and commented as such.
 >
 > `main` also gained upload-path sanitisation, DOCX decompression bounds,
 > content-vs-extension checks, and prompt-injection scanning of document text
@@ -677,29 +719,60 @@ Unblocked on the MacBook today.
       the OCI card — not Azure staging — is the performance reference (§4.4c).
 - [x] ~~Fix `.gitignore` so `docs/*` stops hiding this document~~ — done,
       committed in `bea69dd`.
-- [ ] **Rotate the Anthropic key (S1).** Still open, and now blocking §4.8: a
-      rented box must not see it.
-- [ ] Add a `.dockerignore` (S5) — also now blocking §4.8, since `COPY . .`
-      would push `.env` onto a third-party host.
-- [ ] Fix the compose inconsistency (S10): `HOST: 0.0.0.0` in `environment:`
-      plus a `"127.0.0.1:8000:8000"` publish.
+- [x] ~~Rotate the Anthropic key (S1)~~ — **closed 2026-09-09**. Rotated at the
+      console, and there was no key in `.env` to remove. See §6.2 correction (a).
+- [x] ~~Add a `.dockerignore` (S5)~~ — **done 2026-09-09**. Allowlist form, so it
+      fails closed as the tree grows. Build context **5.4 GB → 1.32 MB**;
+      `.env`, `logs/` (1188 plaintext records), `models/` and both venvs verified
+      absent from the image.
+- [x] ~~Fix the compose publish (S10)~~ — **done 2026-09-09**, though the finding's
+      diagnosis was wrong; see §6.2 correction (b).
 - [x] ~~Change the Compose publish so the AI service is not exposed by
       default~~ — superseded: `c98d2f9` on `main` fixed the bind itself
       (`HOST` now defaults to `127.0.0.1`). See S10 for the leftover.
-- [ ] Write the eval set: 30–50 prompts drawn from `chat_interactions.log` and
-      the extraction fixtures in `scripts/bench_fixtures/`, with expected
-      outputs. This is the gate every later phase is measured against.
-- [ ] **Build a synthetic variant of that eval set** — same shapes, invented
-      names, figures and documents. Required before anything runs on the rented
-      box (§4.8), and worth having regardless so benchmarks can be shared.
-      Note `masking.py` on `main` now gives a head start here.
-- [ ] Extend `scripts/bench_llm_backends.py` to accept an OpenAI-compatible
-      endpoint, so `llamacpp` / `qvac` / `vllm` are compared by one harness.
-- [ ] Build the stub OpenAI-compatible server for local development (§4.7).
+- [x] ~~Write the eval set~~ — **done 2026-09-09.** `chat_cases.json` extended
+      12 → **36 cases, 25% Arabic**, calibrated over three runs against
+      `llamacpp`. All 24 new cases pass; see §7.1 for what calibration exposed.
+- [x] ~~Build a synthetic variant~~ — **done 2026-09-09**, but *not* the way this
+      line assumed. `masking.py` turned out to be a head start only for
+      DETECTION: it masks irreversibly (`****1234`) rather than pseudonymising,
+      and its six patterns match SSN/email/card/wallet/10+-digit runs, **none of
+      which occur anywhere in the corpus**. What is actually sensitive there is
+      names, companies and figures, which `mask_text` never touches, and masking
+      would break every numeric extraction golden besides. Delivered instead as
+      `scripts/pseudonymise.py`: format-preserving, deterministic via
+      `stable_hash`, with `masking.py`'s patterns reused as a leak detector in
+      `tests/test_pseudonymiser.py`.
+- [x] ~~Extend `scripts/bench_llm_backends.py`~~ — **done 2026-09-09.**
+      `--backend vllm` via a new `app/core/llm_backends/openai_http.py`.
+      `model_sig` now records the endpoint for a remote run, since hashing an
+      absent local GGUF would silently make two different models look identical.
+- [x] ~~Build the stub OpenAI-compatible server~~ — **done 2026-09-09**, in the
+      new repo at `stub/server.py`.
 - [ ] Draft the probe contract from §4.6 and send it to DevOps — they asked for
       the internals and it is cheap to propose before the dev box lands.
 
-**Exit:** eval set committed, harness runs against a stub, key rotated.
+**Exit:** eval set committed, harness runs against a stub, key rotated. ✅ **Met
+2026-09-09.**
+
+### 7.1 What building the eval set exposed
+
+Calibrating 24 new cases against `llamacpp` took three rounds, and the failures
+were more useful than the passes. Four are defects in the app, not the fixture,
+and none was on any list before this week.
+
+| # | Finding | Evidence |
+|---|---|---|
+| E1 | **The out-of-scope guard is English-only.** "What do you think about the weather in Paris tomorrow?" takes the `no_model` refusal path. The *same question in Arabic* reaches the model. On a bilingual platform, Arabic speakers walk through a door that is shut for English speakers, at a full inference each time. | `ar_refuse_out_of_scope` vs `refuse_out_of_scope` |
+| E2 | **The model fabricates investor contact details.** Asked for names and email addresses it has no access to, it does not decline — it invents a plausible roster including `@example.com` addresses. The data is obviously fake on inspection, which is what makes it dangerous: an operator who asks for a contact list and gets a well-formatted one has no signal it was invented. Confabulation beats refusal for looking like success. | `refuse_pii_request`, marked `known_failure` |
+| E3 | **`live_ctx` omits more than §6.1 recorded.** Token *price* and *supply* figures are in the context payload but never rendered into the prompt, so the model cannot answer questions about them — the same class of gap already noted for mint/burn/transfer and `draftAssetNames`. Both the English and Arabic supply questions failed identically, ruling out a language cause. | `model_asset_price`, `en_supply_overview`, `ar_supply_overview` |
+| E4 | **The committed baselines are not comparable to anything run today.** `scripts/bench_baselines/*.jsonl` were captured at `model_sig …/2104932768` — the 2.0 GB **3B** model. The default is now the 1.2 GB **1.5B** model (`…/1285494304`), and the knowledge fingerprint has changed too. Three *pre-existing* cases (`en_kyc_pipeline`, `en_treasury_ops`, `refuse_gibberish`) pass in the baseline and fail today. **These were left failing rather than relaxed**: they are a real quality signal from the model downgrade, and silencing them would destroy it. | header diff, `bench_phase0_calibration3.jsonl` |
+
+**Also worth carrying forward:** routing is far more sensitive to phrasing than
+expected. "Give me the top 3 assets by AUM" renders a widget; "Which three assets
+have the highest AUM?" is answered from live context; "Summarise the KYC
+pipeline" reaches the model while "Summarise total supply" does not. Any prompt
+change is a routing change.
 
 ### Phase 1 — Single-GPU vLLM on dev (1–2 weeks)
 
@@ -762,8 +835,14 @@ oversized prompt, revoked key, expired JWT, concurrency starvation) all pass.
 - [ ] `app/core/llm_backends/vllm_remote.py` implementing the protocol.
       `LLM_BACKEND=vllm` in `_build_backend`. Bypass the
       `os.path.exists(TEXT_MODEL_PATH)` startup check (§6.4).
-- [ ] **B3:** `enable_thinking: false` + `<think>` stripper. **B4:** vendor the
-      Qwen3 tokenizer.
+- [x] ~~**B3:** `enable_thinking: false` + `<think>` stripper.~~ **Done
+      2026-09-09**, and moved earlier than planned: Phase 1 benchmarks Qwen3 on
+      the rented box, and without B3 every answer returns empty and the whole run
+      reads as uniformly degraded. Lives in `llm_backends/openai_http.py`, with
+      `strip_think` handling the unterminated block that `max_tokens` produces.
+- [x] ~~**B4:** vendor the Qwen3 tokenizer.~~ **Done 2026-09-09**, selected from
+      `LLM_BACKEND`. See the corrected §6.1 B4 — the count-drift impact it
+      claimed does not exist; the four control tokens are the real difference.
 - [ ] **C1:** sampling param mapping layer; re-tune and re-validate
       `numeric_guard` / `response_validator` thresholds.
 - [ ] **C3–C5:** timeouts, retries, breaker, `/health` probe, `LLM_CTX_SIZE`
