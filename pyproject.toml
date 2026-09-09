@@ -1,0 +1,85 @@
+# bkn301-inference — the FirstData inference gateway and its deployment artefacts.
+#
+# NOTE ON HOUSE STYLE. The consuming repo (baas-poc-templates) has no
+# pyproject.toml, no linter config and no Python CI -- dependencies live in a
+# heavily-commented requirements.txt and there is no lint or test entry point at
+# all. This repo establishes those rather than inheriting their absence, because
+# a gateway is a security boundary and "nobody ran the tests" is not an
+# acceptable state for one.
+#
+# What IS carried over from that repo, deliberately:
+#   * exact == pins, never ranges. Reproducibility beats convenience.
+#   * comments that justify a choice with a measurement or a failure it prevents,
+#     rather than restating the setting.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# Explicit, because auto-discovery refuses to guess when several top-level
+# directories exist (gateway/, stub/, tests/, deploy/, docs/) and fails the
+# build rather than picking one.
+[tool.setuptools]
+packages = ["gateway", "gateway.auth", "gateway.routes", "gateway.upstream", "stub"]
+
+[project]
+name = "bkn301-inference"
+version = "0.1.0"
+description = "Authenticating OpenAI-compatible gateway in front of self-hosted vLLM"
+requires-python = ">=3.12"
+
+dependencies = [
+  "fastapi==0.111.0",
+  "uvicorn==0.30.1",
+  "pydantic==2.8.2",
+  "pydantic-settings==2.3.4",
+  # Async HTTP to the upstream vLLM replicas. Needed specifically for its
+  # streaming response support: the gateway passes SSE through rather than
+  # buffering it, because buffering a 200-token answer at 20 tok/s would add ten
+  # seconds of blank screen (PRD §6.3 C2).
+  "httpx==0.28.1",
+  # API key hashing. argon2id, not bcrypt: bcrypt silently truncates at 72 bytes,
+  # and a key format of bkn_live_<keyid>_<secret> can exceed that -- two distinct
+  # keys sharing a 72-byte prefix would then verify against each other.
+  "argon2-cffi==23.1.0",
+  # JWT validation for the service-to-service path. Asymmetric only (see
+  # gateway/auth/jwt.py) so the gateway holds no signing secret.
+  "pyjwt[crypto]==2.9.0",
+  "prometheus-client==0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.2",
+  "pytest-asyncio==0.23.8",
+  "ruff==0.6.9",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "S"]
+ignore = [
+  # Asserts are the point of a test file, and `S101` would flag every one.
+  "S101",
+  # `Depends(...)` in an argument default is THE FastAPI idiom, not the mutable
+  # -default bug B008 exists to catch: FastAPI resolves it per request and never
+  # mutates it. Following B008 here would mean rewriting every route to pull its
+  # dependencies out of the signature, which also loses the override mechanism
+  # the test suite relies on.
+  "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The stub deliberately binds a host from argv and returns canned data; the
+# security rules aimed at production request handling do not apply to it.
+"stub/*" = ["S104", "S311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# -q by default: a green run should be one line, so a red one is impossible to
+# miss in CI output.
+addopts = "-q"

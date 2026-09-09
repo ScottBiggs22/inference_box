@@ -1,0 +1,62 @@
+# Probe configuration for a vLLM pod, as infrastructure-as-code.
+#
+# This is the §4.6 design DevOps asked for, in the form they will actually apply.
+# The reasoning is in docs/PROBE_CONTRACT.md; the numbers below are PLACEHOLDERS
+# marked as such, because PRD §7 Phase 1 measures them and guessing them is the
+# specific failure this design is trying to avoid.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-qwen3-8b-awq
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:PINNED-VERSION
+          resources:
+            limits:
+              # ONE WHOLE GPU. Never a fraction.
+              #
+              # vLLM pre-allocates its KV cache at startup, so a second vLLM pod
+              # on the same card does not degrade -- it FAILS AT BOOT. And the
+              # A10 cannot be partitioned safely anyway: MIG is A100/A30/H100
+              # only, so time-slicing or MPS are the alternatives and neither
+              # gives memory isolation. PRD §4.5 items 1, 2, 4.
+              nvidia.com/gpu: 1
+
+          # Model load takes 30-60s. While the startup probe is running,
+          # Kubernetes SUPPRESSES the other two -- which is exactly what makes
+          # them safe to tune tightly below.
+          #
+          # failureThreshold x periodSeconds = 24 x 5s = a 120s load budget.
+          # MEASURE the real cold start in Phase 1 and set this from it.
+          startupProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 5
+            failureThreshold: 24
+
+          # "Is this instance BROKEN" -- deliberately NOT "is it busy".
+          #
+          # Putting queue depth here is the intuitive design and it fails badly:
+          # if readiness goes red when an instance is loaded, Kubernetes pulls
+          # EVERY replica out of the endpoint list during a traffic spike and the
+          # service collapses at the moment it is most needed. Load-aware routing
+          # belongs in the gateway, which already tracks in-flight requests.
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            failureThreshold: 2
+
+          # Last resort. A restart costs 30-60s of model reload, so this must
+          # NEVER be a test generation -- a legitimate generation can take 10s+
+          # under load, and a liveness probe that times out on one kills a
+          # perfectly healthy pod.
+          #
+          # 20s x 3 = ~60s to restart.
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3

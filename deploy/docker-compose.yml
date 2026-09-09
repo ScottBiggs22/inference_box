@@ -1,0 +1,38 @@
+# Local development stack: gateway + stub, no GPU required.
+#
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+# This is the loop PRD §4.7 describes: an M-series MacBook has no CUDA and
+# Docker Desktop on macOS has no GPU passthrough, so vLLM cannot run here at
+# all. The stub stands in for it, and gateway development is fully unblocked.
+services:
+  stub:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
+    command: ["python", "-m", "stub.server", "--host", "0.0.0.0", "--port", "8001"]
+    # Not published to the host at all. The gateway reaches it by service name
+    # on the compose network; nothing else has any business talking to it, which
+    # is exactly the relationship vLLM and the gateway have in production.
+    expose:
+      - "8001"
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
+    ports:
+      # Loopback only. Same reasoning as the AI service: publishing on all
+      # interfaces puts a dev-configured auth surface on the network.
+      - "127.0.0.1:8080:8080"
+    environment:
+      UPSTREAM_URLS: http://stub:8001/v1
+      ALLOWED_MODELS: Qwen/Qwen3-8B-AWQ
+      API_KEY_STORE_PATH: /app/keys.json
+      # Throwaway. A real pepper is injected by the platform and never committed.
+      API_KEY_PEPPER: local-dev-pepper-not-a-secret
+      AUDIT_LOG_PATH: /app/logs/audit.jsonl
+    volumes:
+      - ./local-keys.json:/app/keys.json:ro
+    depends_on:
+      - stub

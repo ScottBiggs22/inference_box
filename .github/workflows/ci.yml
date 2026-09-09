@@ -1,0 +1,42 @@
+# Lint and test. The consuming repo has no Python CI at all -- its six workflows
+# are .NET, Node and mobile -- so this establishes the baseline rather than
+# inheriting its absence. A gateway is a security boundary; "nobody ran the
+# tests" is not an acceptable state for one.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e '.[dev]'
+      - run: ruff check .
+      - run: pytest
+
+  # Builds the image the same way the deploy path does, so a Dockerfile that
+  # cannot build is caught here rather than at deploy time.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f deploy/Dockerfile.gateway -t bkn301-inference:ci .
+      # The image must contain no compiler: the build stage exists precisely to
+      # keep build-essential out of the runtime layer.
+      - name: assert no compiler in the runtime image
+        run: |
+          if docker run --rm --entrypoint sh bkn301-inference:ci -c 'command -v gcc cc make' ; then
+            echo "::error::a compiler survived into the runtime image"; exit 1
+          fi
+      - name: assert it does not run as root
+        run: |
+          uid=$(docker run --rm --entrypoint id bkn301-inference:ci -u)
+          test "$uid" != "0" || { echo "::error::image runs as root"; exit 1; }

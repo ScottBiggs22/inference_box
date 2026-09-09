@@ -1,0 +1,42 @@
+# Multi-stage, non-root, no cloud SDK.
+#
+# Contrast with the consuming repo's Dockerfile, which is single-stage, runs as
+# root, and keeps build-essential and cmake in the final image (its S7). None of
+# that is inherited here: this container is an authenticating edge and is the
+# most exposed component in the system.
+
+FROM python:3.12-slim AS build
+WORKDIR /build
+# Wheels are built here and copied forward, so no compiler reaches the runtime
+# image. argon2-cffi and the pyjwt[crypto] extra are the reason a build stage is
+# needed at all.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+    && rm -rf /var/lib/apt/lists/*
+COPY pyproject.toml README.md ./
+COPY gateway/ ./gateway/
+RUN pip install --no-cache-dir --prefix=/install .
+
+FROM python:3.12-slim AS runtime
+# Non-root, with no login shell and no home directory to write into.
+RUN useradd --system --no-create-home --shell /usr/sbin/nologin gateway
+COPY --from=build /install /usr/local
+WORKDIR /app
+COPY gateway/ ./gateway/
+
+# The audit log is the one thing this process writes. Owned by the runtime user
+# so the container does not need a writable /app.
+RUN mkdir -p /app/logs && chown -R gateway:gateway /app/logs
+USER gateway
+
+EXPOSE 8080
+
+# Liveness only. NOT a test generation -- see docs/PROBE_CONTRACT.md: a restart
+# costs 30-60s of upstream model reload, so this must be the cheapest possible
+# check that the process is alive.
+HEALTHCHECK --interval=20s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status==200 else 1)"
+
+# One worker. The gateway is IO-bound (it forwards to a GPU it does not own), so
+# concurrency comes from async, not processes. Replicas are the scaling unit.
+CMD ["python", "-m", "uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

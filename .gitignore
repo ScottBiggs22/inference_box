@@ -1,0 +1,26 @@
+# Virtualenvs (any suffix)
+.venv*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Secrets and local state
+.env
+.env.*
+!.env.example
+# The API key store holds argon2id hashes, not plaintext -- but it is still a
+# per-environment credential registry and has no business in git.
+keys.json
+
+# Audit and benchmark output
+logs/
+*.jsonl
+!tests/fixtures/*.jsonl
+
+.DS_Store
+
+# setuptools build artefact from `pip install -e .`
+*.egg-info/
+build/
+dist/

@@ -1,0 +1,17 @@
+# Allowlist, for the same reason as the consuming repo's: a denylist fails open,
+# and the next large or sensitive directory someone adds ships by default.
+*
+
+!gateway/
+!stub/
+!pyproject.toml
+!README.md
+
+# Re-exclusions: the rules above re-admit whole trees, caches included.
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+# Never. This is a per-environment credential registry.
+keys.json
+.env
