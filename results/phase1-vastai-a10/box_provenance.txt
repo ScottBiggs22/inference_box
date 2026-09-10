@@ -1,0 +1,18 @@
+--- nvidia-smi ---
+name, memory.total [MiB], memory.used [MiB], driver_version, compute_cap, power.limit [W], pcie.link.gen.max, pcie.link.width.max
+NVIDIA A10, 23028 MiB, 0 MiB, 595.84, 8.6, 150.00 W, 4, 16
+
+--- cpu/mem/kernel ---
+96
+Intel(R) Xeon(R) Gold 6342 CPU @ 2.80GHz
+251 GB RAM
+Linux 6.8.0-136-generic
+
+--- vllm + torch + cuda runtime ---
+vllm 0.28.0
+torch 2.13.0+cu130
+torch cuda 13.0
+cudnn 92000
+
+--- vllm serve flag reality (PRD/runbook check) ---
+For a flag:               vllm serve --help=max-model-len  (_ or - accepted)

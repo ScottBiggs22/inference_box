@@ -73,6 +73,15 @@ Roughly $0.20–0.50/hr at current listings — check before booking.
 **Pick the image tag before you book**, and write it down. "latest" is not a
 reproducible benchmark, and vLLM's CLI flags have moved across releases (§4).
 
+> **Check the image's CUDA build against the offer's driver before renting.**
+> `vllm/vllm-openai:v0.28.0` is a **CUDA 13.0** build, so a host whose driver
+> tops out at CUDA 12.x cannot run it — it would fail at boot after you had paid
+> for the rental and the image pull. vast.ai reports this per offer as
+> `cuda_max_good`; require `cuda_max_good >= 13.0` for a v0.28 image. On
+> 2026-09-10 exactly two single-GPU A10 offers existed and **one of them
+> (driver 570.144, `cuda_max_good` 12.8) would have failed** while looking like
+> the better box on every other metric.
+
 ---
 
 ## 2. Get the code up — one data-free tarball
@@ -152,10 +161,29 @@ vllm serve Qwen/Qwen3-8B-AWQ \
   --revision 4da05a8edb55c6046cce958586c33b61da07bb79 \
   --max-model-len 8192 \
   --gpu-memory-utilization 0.90 \
-  --disable-log-requests \
+  --no-enable-log-requests \
+  --no-enable-log-outputs \
   --port 8000 \
-  2>&1 | tee /workspace/vllm-boot.log
+  2>&1 | tee ~/vllm-boot.log
 ```
+
+> **`--disable-log-requests` does not exist in vLLM 0.28.0** and `vllm serve`
+> fails to start with it, which is what an earlier revision of this runbook
+> prescribed (and what PRD §5.2/§5.4 still named). It was replaced by
+> `--enable-log-requests` with the **polarity inverted** — request logging is
+> off by default now — plus `--enable-log-outputs` for completion text, also
+> off. Both are passed explicitly above so the no-retention intent (PRD §5.4
+> item 2) survives a future change of default.
+>
+> **`--enable-prefix-caching` is deliberately absent.** It is on by default in
+> the V1 engine, confirmed by measurement, and the engine log prints
+> `enable_prefix_caching=True` without it. Passing flags that are already the
+> default just adds something else to drift.
+>
+> Note also `~` rather than `/workspace`: the `vllm/vllm-openai` image has no
+> `/workspace` — its home is `/root`. Set `WORKSPACE=/root` when running
+> `verify_box.sh`, or its hygiene scan will examine a directory that does not
+> exist and report clean having checked nothing.
 
 The revision is pinned to a real commit, not a placeholder: an unpinned model
 tag is not a reproducible benchmark, and **the OCI card must be given the same

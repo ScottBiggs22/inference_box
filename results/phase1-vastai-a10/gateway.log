@@ -1,0 +1,184 @@
+INFO:     Started server process [6025]
+INFO:     Waiting for application startup.
+2026-09-10 16:15:02,466 INFO gateway.main gateway up: upstreams=['http://127.0.0.1:8000/v1'] allowed_models=['Qwen/Qwen3-8B-AWQ']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:38792 - "GET /healthz HTTP/1.1" 200 OK
+2026-09-10 16:15:07,846 INFO httpx HTTP Request: GET http://127.0.0.1:8000/v1/models "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:38804 - "GET /readyz HTTP/1.1" 200 OK
+2026-09-10 16:15:08,031 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:38812 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57442 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:15:24,971 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:46846 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:15:32,871 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:45018 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:15:40,240 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:44532 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:15:47,581 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:44546 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:15:54,180 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:36660 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:16:01,523 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:45014 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45002 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45000 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:16:11,192 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:11,230 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:11,252 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53750 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53766 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53776 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:16:19,944 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:19,998 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:20,027 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58442 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58450 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:16:27,145 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:27,195 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58454 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:16:28,614 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58462 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58472 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:16:35,774 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:35,796 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59410 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:16:37,223 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:41274 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41288 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41294 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41296 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41302 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:16:48,888 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:48,902 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:48,916 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:48,930 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:48,942 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:39110 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:16:59,248 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:39122 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39134 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39148 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39150 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:16:59,481 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:59,539 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:59,567 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:16:59,586 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:39094 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:08,442 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:39106 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39116 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:09,345 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:39124 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:09,445 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:09,496 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:39134 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:09,830 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:45970 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:18,690 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:45984 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:19,508 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:45990 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46002 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:19,708 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:19,758 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:46012 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:20,114 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:42756 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42764 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42768 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42772 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42788 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42796 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42812 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42822 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:33,434 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:33,449 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:33,463 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:33,478 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:33,493 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:33,504 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:33,515 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:33,532 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50384 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:43,428 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50388 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:43,872 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50392 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:44,330 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50404 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50416 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50430 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:44,585 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50458 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50446 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:44,791 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:44,831 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:44,853 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:44,870 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51328 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:52,365 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51340 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:54,605 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51344 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51348 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:55,105 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51354 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:55,197 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51366 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:55,292 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:55,322 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51370 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51376 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:17:55,787 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:17:55,815 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51346 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:18:03,300 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51356 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:18:03,601 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51372 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:18:05,372 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51382 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:18:05,570 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51398 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51406 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:18:06,092 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56610 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:18:06,201 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+2026-09-10 16:18:06,251 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56618 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:18:06,679 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:36476 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36480 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36484 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36498 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36500 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36516 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36522 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36536 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36548 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36562 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36568 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36578 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36590 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36606 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36618 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36634 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36648 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36654 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36660 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36668 - "GET /v1/models HTTP/1.1" 200 OK
+2026-09-10 16:21:54,296 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:36672 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:21:54,823 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:36672 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:21:55,235 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:36672 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:21:55,774 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:36672 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:21:56,226 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:36672 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:21:58,303 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:36672 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 16:21:58,804 INFO httpx HTTP Request: POST http://127.0.0.1:8000/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:36672 - "POST /v1/chat/completions HTTP/1.1" 200 OK

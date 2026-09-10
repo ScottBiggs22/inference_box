@@ -1,4 +1,4 @@
-# Handoff — state of play as of 2026-09-09 (rev 2)
+# Handoff — state of play as of 2026-09-10 (rev 3)
 
 Written to carry context into a new session working inside this repo. The PRD
 (`docs/INFERENCE_SERVICE_PRD.md`) remains the design source of truth; this
@@ -230,6 +230,110 @@ hardcodes `TOKENIZER_DIR=./models/qwen2.5-tokenizer`, which overrides the
 
 ---
 
+## 5b. Phase 1 — DONE. Measured on a rented A10, 2026-09-10.
+
+Full record: **`docs/PHASE1_RESULTS.md`**. Raw artefacts:
+`results/phase1-vastai-a10/`. Session cost **$0.117**; instance destroyed, keys
+discarded, nothing left on the vast.ai account.
+
+**Box:** full-card NVIDIA A10, 23028 MiB, driver 595.84, CUDA 13.2, compute
+capability 8.6, 150 W, PCIe gen4 ×16. `verify_box.sh` passed before any weights
+were pulled.
+
+### The three priority measurements
+
+| # | Measurement | Result |
+|---|---|---|
+| 1 | **KV cache** | **92,544 tokens / 12.71 GiB** (cold) vs PRD §3.3's calculated ~105,000 / 14.8 GiB — **12% optimistic**. R4 still met at **2.26× headroom** for 5×8k |
+| 2 | **Cold start** | **45 s warm, 153 s cold.** `startupProbe.failureThreshold` 24 → **60** |
+| 3 | **tok/s/user** | 71.7 / 60.9 / **50.9** / 48.1 at 1/3/5/8 concurrent, 8k context. **R1 gate MET at 2.54×.** PRD projected ~48 @5 — confirmed within 6% |
+
+**B3 (item 3) is fully resolved:** `/think` does **not** override
+`enable_thinking: false`, and `/no_think` does not override `true` — the request
+flag wins in both directions, so no input sanitisation is needed and
+`strip_think` is a belt rather than the primary defence. B3's premise was
+confirmed and its predicted failure reproduced exactly at `max_tokens: 160`.
+The gateway's passthrough preserves `chat_template_kwargs` (checked
+gateway-vs-direct, all seven cases identical) — that was the failure that would
+have broken the fix in production while every stub test stayed green.
+
+### Ten corrections, and the pattern in them
+
+`PHASE1_RESULTS.md` §8 lists all ten. The pattern worth carrying: **the
+throughput model was accurate, the memory model was not.** §3.3's ~48 tok/s/user
+came in at 50.89, while its KV budget was out by 2.1 GiB — chiefly because
+`0.90 × 24 GB` is the wrong basis (the card *addresses* 22.06 GiB, so 0.90 gives
+19.85 GiB), plus CUDA graphs never being budgeted on top of peak activation.
+§3.1's 144 KiB/token was confirmed **to the digit**, so the arithmetic was
+sound and one input was not.
+
+Three that change how things run:
+
+- **`--disable-log-requests` does not exist in vLLM 0.28.0.** `vllm serve`
+  fails to start with it — and the PRD named it in three places. Replaced by
+  `--no-enable-log-requests` / `--no-enable-log-outputs`, polarity inverted, so
+  PRD §5.4's no-retention requirement is now the *default*.
+- **KV cache size is not a constant.** A cold `torch.compile` inflates profiled
+  peak activation by 1.0 GiB and permanently costs **7,312 tokens** of KV
+  (92,544 vs 99,856). Baking the compile cache into the image is worth that
+  plus ~108 s of startup — a real capacity gain, now a DevOps recommendation.
+- **Prefix caching absorbs 98.5% of prompt tokens** on FirstData's traffic
+  shape, confirming PRD §3.6's assumption and keeping LMCache deferred for a
+  measured reason. Forcing 0% hit shows TTFT *is* prefill-bound when it misses
+  (92 ms → 1,405 ms at batch 1), but R1's floor holds even there (28.9 tok/s/user).
+
+### Two findings about the gateway itself
+
+- **Decode overhead is zero** (±0.4% at every concurrency level) — the
+  unbuffered SSE passthrough does what it claims.
+- **TTFT overhead is ~85–130 ms, and it is all argon2id.** Isolated directly:
+  `/healthz` 1.2 ms vs `/v1/models` 77.3 ms. `keys.py` argued the cost was
+  acceptable in front of a multi-second GPU op — confirmed, and now quantified
+  at 0.8% of a 10 s generation but ~2.5% of a 3 s FAQ answer. This is a measured
+  argument for PRD §5.3's preference for the JWT path (~1–2 ms, ~40× cheaper),
+  and a verified-key cache is the alternative if the API-key path stays hot —
+  at the cost of delaying revocation by its TTL.
+- **The audit log's metadata-only guarantee was verified against 78 real
+  requests** to a real model: 13 keys, all metadata, zero occurrences of any
+  prompt or completion word. Stronger evidence than the stub-based unit test.
+
+### Tooling defects the session exposed
+
+Three in the tooling built the day before, all fixed and all now covered by
+tests:
+
+1. **`verify_box.sh`'s hygiene scan would have reported PASS having examined
+   nothing.** Its default target was `/workspace`, which the
+   `vllm/vllm-openai` image does not have — `find` on a missing path returns
+   nothing. A missing target is now a hard failure.
+2. **vast.ai injects `/root/.vast_api_key` into every instance.** Verified by
+   hash that it is instance-scoped, not the account key. The scan now reports
+   host-injected credentials separately rather than failing, which would have
+   made the gate un-passable on this provider.
+3. **`pkill -f "vllm serve"` kills its own SSH session**, because `pkill -f`
+   matches full command lines and the SSH command line carries the pattern. Cost
+   two aborted measurement runs. The launcher now lives in a file on the box so
+   a kill pattern and the launch text never share a command line.
+
+### Not done, and why
+
+- **Eval-set quality vs BF16** — needs the app, which needs the real knowledge
+  corpus, which must not reach a rented host. OCI card, as planned.
+- **Wedge-detection window** for the sidecar backstop — never wedged naturally.
+  Still an estimate; carry into Phase 2 alongside the gateway breaker.
+- **BF16 (config A) fallback comparison** — not needed, AWQ cleared the gate at
+  2.5× the R1 floor.
+
+### The Azure question is now sharper
+
+PRD §8 Q1 remains **the outstanding blocker**, and this measurement gives it
+teeth: the real KV budget on a *full* card is 12.71 GiB, so a half-card
+`NVadsA10_v5` would have ~4 GiB and roughly **28,000 tokens** — making 5 × 8k
+(40,960) **unreachable**, exactly as §4.4(a) warned but now with a measured
+figure rather than an estimate.
+
+---
+
 ## 6. What is deliberately not built
 
 Gateway, all PRD §7 Phase 2. Seams exist for each:
@@ -249,6 +353,17 @@ published), **S7–S9**. Plus E1–E3 above.
 ---
 
 ## 7. Next actions, in order
+
+**Phase 1 is complete (§5b).** Items 1–5 below are done; the live work is item 6
+— Phase 2 gateway, in dependency order: **`/metrics` → circuit breaker +
+health-aware routing → per-key budgets + concurrency caps → mTLS.** Two Phase 1
+by-products feed straight into it: the wedge-detection window is still
+unmeasured and belongs with the breaker, and `stream_options.include_usage` is
+now confirmed working end to end through the passthrough, which is what the
+per-key token budget needs.
+
+<details><summary>Phase 1 items, now closed — kept for the record</summary>
+
 
 1. **Book the vast.ai A10** and follow `docs/VAST_AI_RUNBOOK.md` **rev 2**.
    Transfer with `scripts/pack_for_box.sh` — read the manifest it prints — then
@@ -279,3 +394,5 @@ published), **S7–S9**. Plus E1–E3 above.
 full-card A10. `NVadsA10_v5` starts at one-sixth of a card with a 4 GiB frame
 buffer, and a fractional SKU boots, serves, and silently breaks the 8k context
 requirement. Highest-priority question outstanding with DevOps.
+
+</details>

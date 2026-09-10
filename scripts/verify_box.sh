@@ -55,6 +55,16 @@ bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; fail=1; }
 hygiene_scan() {
   local root="$1"
 
+  # A scan of a directory that does not exist finds nothing and reports clean.
+  # That is not a pass, it is a vacuous check -- and it very nearly shipped:
+  # the default target was /workspace, which the vllm/vllm-openai image does
+  # not have (its home is /root), so on the first real box this function would
+  # have printed three PASS lines having examined no files at all.
+  if [ ! -d "$root" ]; then
+    bad "scan target '$root' does not exist -- nothing was checked. Set WORKSPACE to the directory the payload was extracted into."
+    return
+  fi
+
   # Paths that must never exist on an untrusted host. Each entry earns its
   # place from something that was actually found in the payload.
   local leaks
@@ -62,6 +72,8 @@ hygiene_scan() {
         -name '.env' \
      -o -name 'chat_interactions.log' \
      -o -name 'token_stats.jsonl' \
+     -o -name 'vast_api_key' \
+     -o -name '*api_key*' \
      -o -name 'pending_knowledge.json' \
      -o -name 'pending_sessions.json' \
      -o -name '.faiss_index.*' \
@@ -69,11 +81,36 @@ hygiene_scan() {
      -o -name 'qwen3-tokenizer' \
      -o -name 'qwen2.5-tokenizer' \
      \) 2>/dev/null)
-  if [ -z "$leaks" ]; then
+  # Separate the host platform's own injected credentials from anything WE
+  # put here. vast.ai writes /root/.vast_api_key into every instance so the
+  # container can call its API (self-destruct, and so on). Failing the gate on
+  # it would make the gate un-passable on vast.ai, and a gate that always fails
+  # is one people learn to skip -- the same defect as a gate that always passes.
+  #
+  # It is reported rather than ignored, because it IS a credential on an
+  # untrusted host and the reader should know it is there. What makes it
+  # tolerable is that it is instance-scoped: verified on 2026-09-10 that its
+  # hash differs from the account key in ~/.config/vastai/vast_api_key, so a
+  # host operator reading it gets control of this contract, not the account.
+  # If that ever stops being true, this comment is the thing to re-check.
+  local platform_re='(^|/)\.vast_api_key$|(^|/)\.vast_containerlabel$'
+  local injected our_leaks
+  injected=$(printf '%s' "$leaks" | grep -E "$platform_re" || true)
+  our_leaks=$(printf '%s' "$leaks" | grep -vE "$platform_re" || true)
+
+  if [ -n "$injected" ]; then
+    warn "host-injected credentials present (expected on vast.ai, instance-scoped):"
+    printf '%s\n' "$injected" | sed 's/^/        /'
+    echo "        ^ dies with the instance. Confirm it is NOT your account key:"
+    echo "          laptop: shasum -a 256 < ~/.config/vastai/vast_api_key"
+    echo "          box:    sha256sum < /root/.vast_api_key"
+  fi
+
+  if [ -z "$our_leaks" ]; then
     pass "no real-data artefacts present"
   else
     bad "REAL DATA ON AN UNTRUSTED HOST -- delete this box:"
-    printf '%s\n' "$leaks" | sed 's/^/        /'
+    printf '%s\n' "$our_leaks" | sed 's/^/        /'
   fi
 
   # A whole knowledge/ directory is the AI service's retrieval corpus. Its
@@ -158,7 +195,8 @@ if [ "${1:-}" = "--self-test" ]; then
       'logs/token_stats.jsonl' \
       '.env' \
       'models/model-q4.gguf' \
-      'models/qwen3-tokenizer/tokenizer.json' ; do
+      'models/qwen3-tokenizer/tokenizer.json' \
+      'config/service_api_key' ; do
     d="$tmp/decoy-$(echo "$decoy" | tr '/.' '__')"
     mkdir -p "$d/$(dirname "$decoy")"
     echo 'real content' > "$d/$decoy"

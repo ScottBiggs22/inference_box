@@ -14,7 +14,22 @@ spec:
     spec:
       containers:
         - name: vllm
-          image: vllm/vllm-openai:PINNED-VERSION
+          # Pin the tag. Note the driver coupling measured on 2026-09-10:
+          # v0.28.0 is a CUDA 13.0 build, so a CUDA 12.x-only driver cannot run
+          # it. Verified working on driver 595.84 / CUDA 13.2.
+          image: vllm/vllm-openai:v0.28.0
+          args:
+            - --model=Qwen/Qwen3-8B-AWQ
+            - --revision=4da05a8edb55c6046cce958586c33b61da07bb79
+            - --max-model-len=8192
+            - --gpu-memory-utilization=0.90
+            # NOT --disable-log-requests: that flag does not exist in 0.28.0 and
+            # `vllm serve` fails to start with it. The replacement is inverted --
+            # request logging is off by default now -- but both are stated
+            # explicitly so the intent survives a future default change.
+            # PRD §5.4 item 2. See PHASE1_RESULTS.md §2.
+            - --no-enable-log-requests
+            - --no-enable-log-outputs
           resources:
             limits:
               # ONE WHOLE GPU. Never a fraction.
@@ -26,16 +41,27 @@ spec:
               # gives memory isolation. PRD §4.5 items 1, 2, 4.
               nvidia.com/gpu: 1
 
-          # Model load takes 30-60s. While the startup probe is running,
-          # Kubernetes SUPPRESSES the other two -- which is exactly what makes
-          # them safe to tune tightly below.
+          # MEASURED 2026-09-10 on a full-card A10 (docs/PHASE1_RESULTS.md §4).
+          # While the startup probe runs, Kubernetes SUPPRESSES the other two --
+          # which is what makes them safe to tune tightly below.
           #
-          # failureThreshold x periodSeconds = 24 x 5s = a 120s load budget.
-          # MEASURE the real cold start in Phase 1 and set this from it.
+          #   warm restart (weights + torch.compile cache present):  45s
+          #   cold start   (neither; pulls ~6 GB of weights):        153s
+          #
+          # THE PREVIOUS PLACEHOLDER WAS WRONG IN THE DANGEROUS DIRECTION.
+          # It was 24 x 5s = a 120s budget, against a 153s measured cold start:
+          # Kubernetes would kill the pod at 120s and the replacement would also
+          # start cold. That is a boot loop, not a slow start.
+          #
+          # 60 x 5s = 300s, about 2x the measured cold start. Generous on
+          # purpose: a loose startup probe costs a slower failure verdict, a
+          # tight one costs a loop that never converges. If the image bakes both
+          # the weights and the compile cache, 24 would be adequate -- but this
+          # manifest must not assume it.
           startupProbe:
             httpGet: { path: /health, port: 8000 }
             periodSeconds: 5
-            failureThreshold: 24
+            failureThreshold: 60
 
           # "Is this instance BROKEN" -- deliberately NOT "is it busy".
           #

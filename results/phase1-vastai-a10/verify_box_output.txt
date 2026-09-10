@@ -1,0 +1,27 @@
+=== Rented box verification ===
+
+GPUs visible: 1
+  0, NVIDIA A10, 23028 MiB, 595.84
+
+  [32mPASS[0m  exactly one GPU visible
+  [32mPASS[0m  card is 'NVIDIA A10'
+  [32mPASS[0m  VRAM 23028 MiB (full 24 GB card)
+  [32mPASS[0m  card is idle (0 MiB used)
+  driver: 595.84
+  CUDA Version: 13.2
+  ^ record both: this is the minimum we hand DevOps (Q17)
+  [32mPASS[0m  disk free 59 GB
+
+=== Data hygiene (PRD §4.8) ===
+  [33mWARN[0m  host-injected credentials present (expected on vast.ai, instance-scoped):
+        /root/.vast_api_key
+        ^ dies with the instance. Confirm it is NOT your account key:
+          laptop: shasum -a 256 < ~/.config/vastai/vast_api_key
+          box:    sha256sum < /root/.vast_api_key
+  [32mPASS[0m  no real-data artefacts present
+  [32mPASS[0m  no retrieval corpus present
+  [32mPASS[0m  no credential-shaped material found
+
+All hard requirements met. Record the driver/CUDA lines above in
+docs/PHASE1_RESULTS.md before pulling any weights.
+EXIT_CODE=0

@@ -138,6 +138,31 @@ Budget assumes `--gpu-memory-utilization 0.90` → 21.6 GiB usable of 24 GB.
 > card the AWQ config has ~4 GiB of KV cache — 5 × 4k works, 5 × 8k does not. See
 > §4.4(a).
 
+> **MEASURED 2026-09-10 — the config-B column is 12% optimistic, and the
+> conclusion still holds.** Full details in `docs/PHASE1_RESULTS.md` §3.
+>
+> | Quantity | This table says | Measured on a full-card A10 |
+> |---|---|---|
+> | Usable at 0.90 util | 21.6 GiB | **19.85 GiB** |
+> | KV budget | 14.8 GiB | **12.71 GiB** |
+> | **Total tokens** | **~105,000** | **92,544** |
+> | 5 × 8k headroom | 2.6× | **2.26× — still met** |
+>
+> Two causes. The larger is arithmetic: **`0.90 × 24 GB` is the wrong basis**,
+> because the card addresses **22.06 GiB**, not 24 — the remainder is driver and
+> ECC overhead. The second is that CUDA graphs (0.62 GiB) were folded into the
+> "Activations / CUDA graphs" row rather than budgeted on top of peak activation.
+>
+> **The KV-per-token row is confirmed exactly**: 92,544 × 144 KiB = 12.71 GiB,
+> matching vLLM's own report to the digit. §3.1's geometry is sound; one input
+> to the budget was not.
+>
+> Also measured: **KV cache size is not a constant.** A boot with a cold
+> `torch.compile` cache profiles 1.0 GiB more peak activation and permanently
+> loses 7,312 tokens of KV (92,544 vs 99,856 warm). Capacity planning must use
+> the cold figure unless the compile cache is baked into the image — which is
+> now a recommendation to DevOps, worth both the KV and ~108s of startup.
+
 | | A: BF16 | **B: AWQ INT4 (chosen)** | C: BF16 + DFlare (proposed) | D: AWQ + DFlare |
 |---|---|---|---|---|
 | Target weights | 15.3 GiB | **5.6 GiB** | 15.3 GiB | 5.6 GiB |
@@ -234,6 +259,22 @@ retention register.
 
 **Decision:** measure prefix-cache hit rate in Phase 2. Adopt LMCache in Phase 5
 only if TTFT is demonstrably prefill-bound and prefix caching is missing.
+
+> **Measured 2026-09-10, ahead of schedule — and the deferral holds.**
+> `enable_prefix_caching=True` is confirmed on by default in the V1 engine
+> without passing the flag, as this section assumed. On FirstData's traffic
+> shape (a large byte-identical system-prompt-plus-knowledge prefix and a short
+> unique query) the hit rate was **98.5%** — 730,928 of 742,322 prompt tokens
+> served from cache, only 1.5% actually computed.
+>
+> The condition above is half-satisfied and that is the interesting part.
+> Forcing a 0% hit rate (`loadgen.py --unique-prefix`) shows TTFT **is**
+> emphatically prefill-bound when the cache misses: 92 ms → **1,405 ms** at
+> batch 1, and 132 ms → **3,788 ms** at 5 concurrent, with per-user throughput
+> falling 43% as prefill competes with decode. But prefix caching is not
+> *missing* — it absorbs 98.5% of the load — so LMCache would only address the
+> residual 1.5%. **Deferred, now for a measured reason rather than an assumed
+> one.** Full figures in `PHASE1_RESULTS.md` §5.
 
 ---
 
@@ -376,7 +417,13 @@ load-bearing rather than theoretical.
    container, no other `nvidia-smi`-visible tenant.
 5. **No tensor parallelism.** An 8B AWQ model fits in one card and A10s have no
    NVLink.
-6. **Cold start is ~30–60s** for model load. This governs the probe design below.
+6. ~~**Cold start is ~30–60s** for model load.~~ **Measured 2026-09-10: 45s
+   warm, 153s cold.** The 30–60s estimate is right for a restart with the
+   weights and the `torch.compile` cache already present, and **wrong by 2.5×
+   for a fresh pod** that must pull ~6 GB of weights and compile from scratch.
+   `deploy/k8s/probes.yaml` now carries `failureThreshold: 60` (a 300s budget);
+   its previous placeholder of 24 (120s) would have **boot-looped** a cold pod.
+   This governs the probe design below.
 
 ### 4.6 Health probe design
 
@@ -572,8 +619,17 @@ key, that gap is largely illusory. It is cost without benefit here.
 What actually reduces exposure, in descending order of value:
 
 1. **TLS 1.3 everywhere**, including gateway→vLLM (mTLS on the private subnet).
-2. **No-retention by default.** `--disable-log-requests` on vLLM; no prompt
+2. **No-retention by default.** ~~`--disable-log-requests` on vLLM~~; no prompt
    logging in the gateway; metadata-only audit (§5.3).
+   > **Corrected 2026-09-10.** `--disable-log-requests` **does not exist in
+   > vLLM 0.28.0** — `vllm serve` fails to start with it. It was replaced by
+   > `--enable-log-requests` / `--no-enable-log-requests` with the **polarity
+   > inverted**: request logging is now off by default and opt-in. There is also
+   > `--enable-log-outputs` for completion text, likewise off by default. So this
+   > requirement is now satisfied *by default*, which is a better posture than
+   > relying on a flag — but the correct launch flags are
+   > **`--no-enable-log-requests --no-enable-log-outputs`**, stated explicitly so
+   > the intent survives a future default change. See `PHASE1_RESULTS.md` §2.
 3. **Redact before send.** The platform already tokenises assets — extend that
    discipline to prompts. Strip or pseudonymise investor identifiers in the
    context block before it leaves the app.
@@ -603,7 +659,7 @@ the places where the current design assumes a *local, single-threaded* model.
 |---|---|---|---|
 | B1 | **The app can only ever have one request in flight — and infra cannot fix that.** `LLMEngine._lock` is an `RLock` held *around* `self._backend.generate(...)`, so for a remote backend the HTTP call happens inside the lock. A load balancer can only distribute requests it has received; if the client emits one at a time, there is never a second request to split by card capacity. | `llm_engine.py:70,261,269` | R2 asks for 3–5 concurrent. The symptom is not slowness but silent quality loss: `max_wait_sec` defaults to 30s, and on timeout `generate()` returns `("", True)` → a RAG-only answer. At ~10s per generation, user 2 waits and is served; users 4–5 wait 30s and get a non-LLM answer. **Resolution: scale AI-service replicas, do not add in-process concurrency** — see §6.4. |
 | B2 | **`EXTRACTION_LIMITER = CapacityLimiter(1)`** serialises extraction across `/assets` and `/media`. | `llm_engine.py:35` | Same root cause, same resolution — one in-flight extraction per replica is correct; add replicas. |
-| B3 | **Qwen3 thinking mode will empty every answer.** Qwen3-8B is a hybrid reasoning model; the default chat template emits `<think>…</think>`. `FAQ_MAX_TOKENS = 160` would be consumed entirely by an unterminated think block, `generate()` returns empty text, and the facade maps empty → `("", True)` → degraded. | `chat.py:157`, `llm_engine.py:274` | **The entire app would silently fall back to RAG-only mode** with no error, only the degraded banner. **Fix:** `chat_template_kwargs: {"enable_thinking": false}`. Raising the token allowance instead is *not* an alternative — the trace still reaches `_cap_answer(text, 800)`, which truncates at 800 chars and would ship the reasoning as the answer. A `<think>` stripper is required either way, and once present, disabling is free. Two things to verify in Phase 1: whether `enable_thinking: false` overrides a user typing `/think` in their query (Qwen3 parses that as a soft switch), and that the `presence_penalty` mapping does not silently drop. |
+| B3 | **Qwen3 thinking mode will empty every answer.** Qwen3-8B is a hybrid reasoning model; the default chat template emits `<think>…</think>`. `FAQ_MAX_TOKENS = 160` would be consumed entirely by an unterminated think block, `generate()` returns empty text, and the facade maps empty → `("", True)` → degraded. | `chat.py:157`, `llm_engine.py:274` | **The entire app would silently fall back to RAG-only mode** with no error, only the degraded banner. **Fix:** `chat_template_kwargs: {"enable_thinking": false}`. Raising the token allowance instead is *not* an alternative — the trace still reaches `_cap_answer(text, 800)`, which truncates at 800 chars and would ship the reasoning as the answer. A `<think>` stripper is required either way, and once present, disabling is free. ~~Two things to verify in Phase 1: whether `enable_thinking: false` overrides a user typing `/think` in their query (Qwen3 parses that as a soft switch)~~ **— VERIFIED 2026-09-10 on real Qwen3-8B-AWQ: the request flag WINS, in both directions.** `/think` does not re-enable reasoning against `enable_thinking: false`, and `/no_think` does not suppress it against `enable_thinking: true`. `chat_template_kwargs` is authoritative and the soft switch is subordinate to it, so **no input sanitisation is needed at the app boundary** and `strip_think` is a belt rather than the primary defence. B3's premise was also confirmed (the model does default to emitting `<think>`) and its predicted failure reproduced exactly at `max_tokens: 160` — unterminated block, `finish_reason: length`, nothing surviving the stripper. The gateway's passthrough was separately confirmed to preserve `chat_template_kwargs`, which is the failure that would have broken this fix in production while every stub test stayed green. See `PHASE1_RESULTS.md` §6. Still open: that the `presence_penalty` mapping does not silently drop. |
 | B4 | ~~**Tokenizer mismatch.**~~ **RESOLVED 2026-09-09, and the stated impact was wrong.** Original claim: `TOKENIZER_DIR` points at a vendored Qwen2.5 tokenizer, Qwen3's vocab is 151,552 and differs, so "wrong counts silently mis-size every chunk". **Measured: they do not.** Both tokenizers report `vocab_size` **151643**, and token IDs were byte-identical across **all 349 distinct strings** in `chat_interactions.log` plus all five extraction fixtures — zero count differences on English, Arabic, hex-dense and money-dense text. Chunk budgets were never mis-sized. What genuinely differs is **four added control tokens** — `<think>`, `</think>`, `<tool_response>`, `</tool_response>` — which Qwen3 encodes as **one token each** and Qwen2.5 splits into three or four. Narrow, but it lands precisely on the B3 reasoning-block surface. **Fixed** by vendoring both and selecting from `LLM_BACKEND` (`config.py`), since the right tokenizer is a property of the model served, not of the service. Pinned by `tests/test_tokenizer.py::TestQwen3Divergence` and `::TestBackendSelection`. | `config.py` | — |
 
 > ### Correction — B4's fix is real but is not "vendored"

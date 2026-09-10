@@ -72,3 +72,18 @@ def test_scan_only_catches_planted_data(tmp_path, decoy):
     result = _run("--scan-only", str(tmp_path))
     assert result.returncode == 1, result.stdout
     assert "HYGIENE SCAN FAILED" in result.stdout
+
+
+def test_missing_scan_target_is_a_failure_not_a_pass(tmp_path):
+    """A scan of a directory that does not exist examined nothing.
+
+    Found on the first real box: `vllm/vllm-openai` has no `/workspace` (its
+    home is `/root`), and that was the scan's default target. `find` on a
+    missing path returns nothing, so the gate printed three PASS lines having
+    looked at no files at all -- the exact always-passes failure this file's
+    docstring criticises the old scan for.
+    """
+    result = _run("--scan-only", str(tmp_path / "does-not-exist"))
+    assert result.returncode == 1, result.stdout
+    assert "does not exist" in result.stdout
+    assert "nothing was checked" in result.stdout

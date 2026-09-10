@@ -1,0 +1,23 @@
+=== vLLM 0.28.0 flag reality (PRD/runbook correction evidence) ===
+--- vllm --version ---
+0.28.0
+
+--- does --disable-log-requests exist? ---
+No group or arguments matching 'disable-log-requests'.
+Use '--help' to see available groups or '--help=all' to see all available parameters.
+
+--- the replacement, and its default ---
+  --enable-log-requests, --no-enable-log-requests
+                        Enable logging request information, dependent on log
+                        level:
+                        - INFO: Request ID, parameters and LoRA request.
+
+--- enable-log-outputs default ---
+  --enable-log-outputs, --no-enable-log-outputs
+  --enable-offline-docs, --no-enable-offline-docs
+                        Enable offline FastAPI documentation for air-gapped
+                        environments. Uses vendored static assets bundled with
+
+--- gpu-memory-utilization default ---
+default value of 0.92.
+(default: 0.92)

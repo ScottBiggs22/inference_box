@@ -85,6 +85,7 @@ deny=$(printf '%s\n' "$manifest" | grep -E \
   -e '(^|/)\.env$' \
   -e '(^|/)\.env\.[^/]*$' \
   -e '(^|/)[a-z-]*keys\.json$' \
+  -e '(^|/)[a-z_]*api_key[a-z_]*$' \
   -e '(^|/)logs/' \
   -e '^data/' -e '(^|/)data/' \
   -e '^knowledge/' -e '(^|/)knowledge/' \
