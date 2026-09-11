@@ -13,7 +13,7 @@ actually touch, on the laptop, in-process, deterministically:
     /v1/models
     /v1/chat/completions        (streaming and non-streaming)
     /health                     (mimics vLLM's own readiness semantics)
-    /metrics                    (the four vLLM gauges the probe design reads)
+    /metrics                    (vLLM's real series, with its real label set)
 
 DETERMINISTIC BY DESIGN
 =======================
@@ -51,7 +51,7 @@ import time
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
 STUB_MODEL = "Qwen/Qwen3-8B-AWQ"
 
@@ -70,11 +70,29 @@ class StubState:
         self.latency = 0.0
         self.fail_after: int | None = None
         self.requests = 0
-        # Mirrors vLLM's /metrics gauges. Static unless a request is in flight;
-        # enough for the gateway's scrape path to be exercised end to end.
+        # Mirrors vLLM's /metrics. REAL counters now, not decoration: `waiting`
+        # was previously initialised to 0 and written by nothing at all, which
+        # made the wedge signature -- waiting > 0 while generated_tokens stays
+        # flat -- literally unreachable through this server, even though the
+        # /metrics docstring said that was what it existed for.
         self.running = 0
         self.waiting = 0
         self.generated_tokens = 0
+        # When set, a chat request queues itself and then never completes: the
+        # socket stays open and /health and /metrics keep answering 200. That is
+        # what a wedged engine looks like, and why no HTTP probe can see one.
+        self.wedge = False
+        # Admission control, so queue depth is a consequence of concurrency
+        # rather than a decoration. Built lazily: a semaphore binds to the loop
+        # that first awaits it, and StubState is constructed at import.
+        self.max_concurrent = 0
+        self._sem: asyncio.Semaphore | None = None
+
+    @property
+    def sem(self) -> asyncio.Semaphore:
+        if self._sem is None:
+            self._sem = asyncio.Semaphore(self.max_concurrent or 1024)
+        return self._sem
 
 
 state = StubState()
@@ -110,27 +128,64 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/metrics")
-def metrics():
-    """The four gauges the wedge-detection design reads (PRD §4.6).
+# The real vLLM 0.28.0 label set, captured from a live server in
+# results/phase1-vastai-a10/vllm-metrics-final.txt. Emitting UNLABELLED series
+# here -- as this endpoint used to -- is worse than emitting nothing: a scraper
+# written against it parses cleanly, passes every local test, and then matches
+# nothing whatsoever against a real server.
+_LABELS = f'engine="0",model_name="{STUB_MODEL}"'
 
-    `vllm:generation_tokens_total` staying flat while `num_requests_waiting` is
-    above zero is the wedge signature -- it is a relationship between two series
-    over time, which is why it cannot be an HTTP probe and needs a scraper.
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics() -> str:
+    """vLLM's exposition, in the shape a real one actually has.
+
+    `response_class=PlainTextResponse` is load-bearing. Returning a bare `str`
+    from a FastAPI route JSON-encodes it -- quoted, newlines escaped, served as
+    application/json -- and no Prometheus parser will accept that. It was this
+    endpoint's second defect.
+
+    Three traps are reproduced ON PURPOSE, because a stub that emits only the
+    happy shape is how a parser bug reaches production:
+
+      * `_created` siblings. Every counter has one; it is a GAUGE whose value is
+        a boot timestamp that never changes. A parser matching by prefix picks it
+        up and then sees a permanently flat counter -- wedge-alerting forever.
+      * `num_requests_waiting_by_reason`, which SUMS to `num_requests_waiting`
+        and so double-counts anything totalling naively.
+      * the `_total` suffix, which prometheus_client's parser strips from counter
+        FAMILY names while keeping it on the sample.
     """
-    return "\n".join(
-        [
-            "# TYPE vllm:num_requests_running gauge",
-            f"vllm:num_requests_running {state.running}",
-            "# TYPE vllm:num_requests_waiting gauge",
-            f"vllm:num_requests_waiting {state.waiting}",
-            "# TYPE vllm:generation_tokens_total counter",
-            f"vllm:generation_tokens_total {state.generated_tokens}",
-            "# TYPE vllm:time_to_first_token_seconds histogram",
-            "vllm:time_to_first_token_seconds_sum 0.0",
-            "vllm:time_to_first_token_seconds_count 0",
-        ]
-    )
+    created = 1.789056823729462e09
+    return "\n".join([
+        "# TYPE vllm:num_requests_running gauge",
+        f"vllm:num_requests_running{{{_LABELS}}} {float(state.running)}",
+        "# TYPE vllm:num_requests_waiting gauge",
+        f"vllm:num_requests_waiting{{{_LABELS}}} {float(state.waiting)}",
+        "# TYPE vllm:num_requests_waiting_by_reason gauge",
+        f'vllm:num_requests_waiting_by_reason{{{_LABELS},reason="capacity"}} '
+        f'{float(state.waiting)}',
+        f'vllm:num_requests_waiting_by_reason{{{_LABELS},reason="deferred"}} 0.0',
+        "# TYPE vllm:kv_cache_usage_perc gauge",
+        f"vllm:kv_cache_usage_perc{{{_LABELS}}} 0.0",
+        "# TYPE vllm:generation_tokens_total counter",
+        f"vllm:generation_tokens_total{{{_LABELS}}} {float(state.generated_tokens)}",
+        "# TYPE vllm:generation_tokens_created gauge",
+        f"vllm:generation_tokens_created{{{_LABELS}}} {created}",
+        "# TYPE vllm:prompt_tokens_total counter",
+        f"vllm:prompt_tokens_total{{{_LABELS}}} 0.0",
+        "# TYPE vllm:num_preemptions_total counter",
+        f"vllm:num_preemptions_total{{{_LABELS}}} 0.0",
+        "# TYPE vllm:prefix_cache_queries_total counter",
+        f"vllm:prefix_cache_queries_total{{{_LABELS}}} 0.0",
+        "# TYPE vllm:prefix_cache_hits_total counter",
+        f"vllm:prefix_cache_hits_total{{{_LABELS}}} 0.0",
+        "# TYPE vllm:time_to_first_token_seconds histogram",
+        f'vllm:time_to_first_token_seconds_bucket{{{_LABELS},le="+Inf"}} 0.0',
+        f"vllm:time_to_first_token_seconds_sum{{{_LABELS}}} 0.0",
+        f"vllm:time_to_first_token_seconds_count{{{_LABELS}}} 0.0",
+        "",
+    ])
 
 
 @app.get("/v1/models")
@@ -161,19 +216,26 @@ async def chat_completions(request: Request):
     if not body.get("messages"):
         raise HTTPException(status_code=400, detail="messages is required")
 
+    if state.wedge:
+        # Register as queued, then never finish. PROBE_CONTRACT.md §4's signature
+        # needs exactly this: work waiting while the token counter does not move.
+        state.waiting += 1
+        await asyncio.Event().wait()  # never returns; the caller must time out
+
     max_tokens = int(body.get("max_tokens") or 64)
     text = _completion_text(body, max_tokens)
-
-    state.running += 1
-    try:
-        if state.latency:
-            await asyncio.sleep(state.latency)
-    finally:
-        state.running -= 1
-
     prompt_tokens = sum(len(str(m.get("content", "")).split()) for m in body["messages"])
     completion_tokens = len(text.split())
-    state.generated_tokens += completion_tokens
+
+    state.waiting += 1
+    async with state.sem:
+        state.waiting -= 1
+        state.running += 1
+        try:
+            if state.latency:
+                await asyncio.sleep(state.latency)
+        finally:
+            state.running -= 1
 
     created = int(time.time())
     cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -198,6 +260,9 @@ async def chat_completions(request: Request):
             media_type="text/event-stream",
         )
 
+    # Non-streamed: the whole completion exists now, so count it now. The
+    # streamed path counts per frame inside _stream instead.
+    state.generated_tokens += completion_tokens
     return {
         "id": cid,
         "object": "chat.completion",
@@ -232,12 +297,23 @@ async def _stream(cid: str, created: int, model: str, text: str,
         }
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-    yield frame({"role": "assistant", "content": ""})
-    for word in text.split():
-        if state.latency:
-            await asyncio.sleep(min(state.latency / 50.0, 0.05))
-        yield frame({"content": word + " "})
-    yield frame({}, finish="stop")
+    # `running` spans the WHOLE stream. It used to cover only the latency sleep,
+    # so it dropped to 0 while tokens were still being emitted -- inverted
+    # relative to a real engine, and exactly wrong for anything reading it.
+    state.running += 1
+    try:
+        yield frame({"role": "assistant", "content": ""})
+        for word in text.split():
+            if state.latency:
+                await asyncio.sleep(min(state.latency / 50.0, 0.05))
+            # Per frame, not one jump before the first byte is sent. The old
+            # accounting meant a scraper sampling mid-stream saw an
+            # already-advanced counter -- the wedge condition, inverted.
+            state.generated_tokens += 1
+            yield frame({"content": word + " "})
+        yield frame({}, finish="stop")
+    finally:
+        state.running -= 1
     if usage is not None:
         # The usage frame comes last and carries an EMPTY choices list. A
         # consumer that assumes every frame has a choices[0] crashes on it,
@@ -266,11 +342,18 @@ def main() -> None:
                     help="Seconds of simulated decode time per request.")
     ap.add_argument("--stub-fail-after", type=int, default=None,
                     help="Return 503 after this many requests, for the breaker.")
+    ap.add_argument("--stub-wedge", action="store_true",
+                    help="Accept chat requests, queue them, and never answer -- "
+                         "the wedge signature PROBE_CONTRACT.md 4 describes.")
+    ap.add_argument("--stub-max-concurrent", type=int, default=0,
+                    help="Admission limit, so num_requests_waiting is real.")
     args = ap.parse_args()
 
     state.think = args.stub_think
     state.latency = args.stub_latency
     state.fail_after = args.stub_fail_after
+    state.wedge = args.stub_wedge
+    state.max_concurrent = args.stub_max_concurrent
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

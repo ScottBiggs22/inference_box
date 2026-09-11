@@ -12,6 +12,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
+from gateway import metrics
 from gateway.audit import AuditRecord, audit_log
 from gateway.auth import Principal, require_principal
 from gateway.config import settings
@@ -20,8 +21,25 @@ from gateway.upstream.client import pool
 router = APIRouter(prefix="/v1", tags=["inference"])
 
 
+def _upstream_label(url: str) -> str:
+    """Replicas are labelled by index, never by URL.
+
+    /metrics is unauthenticated, and the upstream URLs are private-subnet vLLM
+    addresses. Publishing them to an anonymous scraper is the same class of leak
+    that keeps `keyid` out of the labels -- topology instead of tenancy. The
+    index -> URL map is logged once at startup for whoever needs to resolve it.
+    """
+    try:
+        return str(pool.urls.index(url))
+    except ValueError:
+        return "unknown"
+
+
 def _reject(status_code: int, reason: str, principal: Principal,
             model: str | None, started: float) -> HTTPException:
+    # Counted from the same place, with the same vocabulary, as the audit record
+    # -- so the two cannot drift apart.
+    metrics.record_rejection(reason)
     audit_log.write(
         AuditRecord(
             timestamp=audit_log.now(),
@@ -132,11 +150,19 @@ async def chat_completions(
     try:
         resp = await pool.client.post(url, json=body)
     except Exception as e:
+        metrics.upstream_requests_total.labels(
+            upstream=_upstream_label(upstream), outcome="unreachable").inc()
         raise _reject(status.HTTP_502_BAD_GATEWAY,
                       "upstream_unreachable", principal, model, started) from e
 
+    metrics.upstream_requests_total.labels(
+        upstream=_upstream_label(upstream),
+        outcome="ok" if resp.status_code < 400 else "http_error",
+    ).inc()
+
     payload = resp.json() if resp.status_code < 400 else {}
     usage = payload.get("usage") or {}
+    _record_usage(model, usage)
     audit_log.write(
         AuditRecord(
             timestamp=audit_log.now(),
@@ -159,6 +185,26 @@ async def chat_completions(
     return payload
 
 
+def _record_usage(model: str | None, usage: dict) -> None:
+    """Count reported tokens, and count the requests where there were none.
+
+    The second half matters more than it looks. A streamed request carries no
+    usage unless the SSE frames are parsed for it, which this gateway does not do
+    yet -- 70 of Phase 1's 78 requests were streamed, so this counter would
+    otherwise read about a tenth of reality with nothing to say so.
+    """
+    label = metrics.safe_model(model)
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    if prompt is None and completion is None:
+        metrics.requests_missing_usage_total.labels(model=label).inc()
+        return
+    if prompt:
+        metrics.tokens_total.labels(model=label, kind="prompt").inc(prompt)
+    if completion:
+        metrics.tokens_total.labels(model=label, kind="completion").inc(completion)
+
+
 async def _stream(url: str, body: dict, principal: Principal,
                   model: str | None, started: float, upstream: str):
     """Relay SSE frames as they arrive.
@@ -172,12 +218,29 @@ async def _stream(url: str, body: dict, principal: Principal,
     """
     async def relay():
         status_code = 200
+        first_byte = True
         try:
             async with pool.client.stream("POST", url, json=body) as resp:
                 status_code = resp.status_code
+                metrics.upstream_requests_total.labels(
+                    upstream=_upstream_label(upstream),
+                    outcome="ok" if status_code < 400 else "http_error",
+                ).inc()
                 async for chunk in resp.aiter_raw():
+                    if first_byte and chunk:
+                        # TTFT is only measurable on this path. Phase 1 measured
+                        # 92-132ms on a prefix-cache hit against 1.4-3.8s on a
+                        # miss, which is why the buckets resolve both regimes.
+                        first_byte = False
+                        metrics.time_to_first_token_seconds.labels(
+                            model=metrics.safe_model(model)
+                        ).observe(time.perf_counter() - started)
                     yield chunk
         finally:
+            # No usage frame is parsed out of the passthrough yet, so every
+            # streamed request is an unobserved one. Counted, not guessed at.
+            metrics.requests_missing_usage_total.labels(
+                model=metrics.safe_model(model)).inc()
             audit_log.write(
                 AuditRecord(
                     timestamp=audit_log.now(),

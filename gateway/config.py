@@ -192,7 +192,35 @@ class Settings(BaseSettings):
         default_factory=lambda: _flag("AUDIT_INCLUDE_PROMPT_TEXT", "false"))
 
     # ── Observability ────────────────────────────────────────────────────────
+    # Gates EXPOSURE of /metrics, not collection. Collection is unconditional so
+    # that flipping this cannot change which code paths run.
     METRICS_ENABLED: bool = Field(default_factory=lambda: _flag("METRICS_ENABLED", "true"))
+    # How often to scrape each replica's own /metrics. 5s gives 24 samples
+    # against the wedge window below -- enough that one missed scrape cannot flip
+    # the verdict, and enough resolution that a real stall duration is worth
+    # recording. 30s would quantise the measurement to 30s, which defeats the
+    # purpose of measuring it at all.
+    UPSTREAM_METRICS_POLL_SEC: float = Field(
+        default_factory=lambda: float(os.getenv("UPSTREAM_METRICS_POLL_SEC", "5.0")))
+    # Deliberately NOT UPSTREAM_READ_TIMEOUT_SEC. A /metrics scrape that takes
+    # two minutes is itself the symptom, and waiting that long stops the detector
+    # at precisely the moment it is needed.
+    UPSTREAM_METRICS_TIMEOUT_SEC: float = Field(
+        default_factory=lambda: float(os.getenv("UPSTREAM_METRICS_TIMEOUT_SEC", "2.0")))
+    # HOW LONG THE WEDGE SIGNATURE MUST HOLD BEFORE IT IS BELIEVED.
+    #
+    # THIS NUMBER IS AN ESTIMATE, NOT A MEASUREMENT. It comes from
+    # PROBE_CONTRACT.md §4 ("120s, not 20s"), which says plainly that Phase 1 was
+    # meant to measure it. Phase 1 never wedged an engine naturally, so it did
+    # not. Nothing in this system may be correct only if 120 is the right number,
+    # which is why the breaker requires two consecutive confirmations and alerts
+    # before it acts on one.
+    #
+    # bkn301_gateway_upstream_wedge_stall_seconds is exported continuously,
+    # including well below this threshold, specifically so the first real
+    # incident replaces this guess with data.
+    UPSTREAM_WEDGE_WINDOW_SEC: float = Field(
+        default_factory=lambda: float(os.getenv("UPSTREAM_WEDGE_WINDOW_SEC", "120.0")))
 
     # ── Parsed views of the CSV settings ─────────────────────────────────────
     # Properties, not fields. See the note above _csv.

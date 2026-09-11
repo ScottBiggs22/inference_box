@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 import anyio
 import anyio.to_thread
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from gateway.auth.jwt import JwtVerifier, scopes_of
 from gateway.auth.keys import AuthError, KeyStore
@@ -133,7 +133,21 @@ def _unauthorized() -> HTTPException:
     )
 
 
+def _mark(request: Request | None, method: str) -> None:
+    """Publish the credential type for the metrics middleware.
+
+    It runs outside the dependency system and so cannot see the Principal, and
+    an unauthenticated request never produces one at all -- the middleware reads
+    "none" in that case, which is the right answer. Recorded as a label because
+    PRD §5.3 calls the JWT path "preferred" and nothing currently reports whether
+    any caller actually uses it.
+    """
+    if request is not None:
+        request.state.auth_method = method
+
+
 async def require_principal(
+    request: Request = None,  # noqa: RUF013 - injected by type; default keeps it callable in tests
     authorization: str | None = Header(default=None),
     store: KeyStore = Depends(get_key_store),
     verifier: JwtVerifier = Depends(get_jwt_verifier),
@@ -151,6 +165,7 @@ async def require_principal(
             claims = verifier.verify(credential)
         except AuthError as e:
             raise _unauthorized() from e
+        _mark(request, "jwt")
         return Principal(
             subject=str(claims.get("sub")),
             scopes=scopes_of(claims),
@@ -164,6 +179,7 @@ async def require_principal(
         )
     except AuthError as e:
         raise _unauthorized() from e
+    _mark(request, "apikey")
     return Principal(
         subject=f"key:{record.keyid}",
         scopes=record.scopes,

@@ -13,20 +13,55 @@ closed at exit cannot drift apart.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from gateway import metrics as gw_metrics
 from gateway.config import settings
-from gateway.routes import chat, health, models
+from gateway.metrics import MetricsMiddleware
+from gateway.routes import chat, health, metrics, models
 from gateway.upstream.client import pool
+from gateway.upstream.metrics_scraper import upstream_metrics
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+async def _scrape_loop() -> None:
+    """Poll every replica's own /metrics so the wedge signature can be derived."""
+    while True:
+        try:
+            await upstream_metrics.poll_once(pool.client, pool.urls)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning("upstream metrics poll failed: %s: %s", type(e).__name__, e)
+        await asyncio.sleep(settings.UPSTREAM_METRICS_POLL_SEC)
+
+
+async def _loop_lag_monitor(interval: float = 0.25) -> None:
+    """Publish how late a short sleep wakes up.
+
+    This process relays SSE from its event loop with a single worker, so
+    synchronous work on that loop stalls every concurrent stream at once -- an
+    inline argon2id hash was doing exactly that (see gateway/auth/__init__.py).
+    This is the metric that makes that class of bug visible in production rather
+    than only under a benchmark, and the breaker's timings assume the loop is
+    responsive.
+    """
+    while True:
+        t0 = time.perf_counter()
+        await asyncio.sleep(interval)
+        gw_metrics.event_loop_lag_seconds.set(
+            max(0.0, time.perf_counter() - t0 - interval)
+        )
 
 
 @asynccontextmanager
@@ -36,6 +71,11 @@ async def lifespan(app: FastAPI):
         "gateway up: upstreams=%s allowed_models=%s",
         pool.urls, settings.ALLOWED_MODELS,
     )
+    # Replicas are labelled by index in /metrics, never by URL -- that endpoint is
+    # unauthenticated and the URLs are private-subnet addresses. This is the one
+    # place the mapping is written down.
+    for i, url in enumerate(pool.urls):
+        logger.info("upstream %d = %s", i, url)
     if settings.AUDIT_INCLUDE_PROMPT_TEXT:
         logger.error(
             "AUDIT_INCLUDE_PROMPT_TEXT is on. Prompt text will be written to the "
@@ -50,9 +90,22 @@ async def lifespan(app: FastAPI):
             "API_KEY_PEPPER is unset. Key hashes are salted but not peppered, so "
             "a stolen key store is sufficient for an offline attack."
         )
+    tasks = [
+        asyncio.create_task(_scrape_loop(), name="upstream-metrics"),
+        asyncio.create_task(_loop_lag_monitor(), name="loop-lag"),
+    ]
     try:
         yield
     finally:
+        # Cancel and await BEFORE closing the client: a poll in flight against a
+        # closed httpx client raises into the shutdown path for no reason.
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
         await pool.stop()
         logger.info("gateway down")
 
@@ -69,7 +122,14 @@ def create_app() -> FastAPI:
     # No CORS middleware. This gateway is called server-to-server by the C# API,
     # never from a browser. Adding permissive CORS "just in case" is how an
     # internal service acquires a browser-reachable attack surface.
+    #
+    # Instrumentation is pure ASGI rather than BaseHTTPMiddleware -- see the
+    # class docstring. It is added unconditionally: METRICS_ENABLED gates
+    # EXPOSURE, not collection, so that flipping it cannot change which code
+    # paths run.
+    app.add_middleware(MetricsMiddleware)
     app.include_router(health.router)
+    app.include_router(metrics.router)
     app.include_router(models.router)
     app.include_router(chat.router)
     return app
