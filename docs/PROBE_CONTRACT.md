@@ -31,7 +31,7 @@ another full model reload, and a restart loop costs the service.
 
 | Probe | Endpoint | Checks | Timings | Why |
 |---|---|---|---|---|
-| `startupProbe` | vLLM `/health` | Engine initialised | `periodSeconds: 5`, `failureThreshold: 24` → **120s budget** | vLLM returns 200 here only once the engine is up. **While this runs, Kubernetes suppresses the other two** — which is what makes them safe to tune tightly. |
+| `startupProbe` | vLLM `/health` | Engine initialised | `periodSeconds: 5`, `failureThreshold: 60` → **300s budget** | vLLM returns 200 here only once the engine is up. **While this runs, Kubernetes suppresses the other two** — which is what makes them safe to tune tightly. **Measured 2026-09-10, see §5.** |
 | `readinessProbe` | `/health` | Engine health **only** | `periodSeconds: 10`, `failureThreshold: 2` | Answers "is this instance broken", never "is it busy". See §3. |
 | `livenessProbe` | `/health` | Engine loop alive. **Never a test generation.** | `periodSeconds: 20`, `timeoutSeconds: 5`, `failureThreshold: 3` → ~60s | Restart costs 30–60s of reload, so this is the last resort. |
 
@@ -93,16 +93,33 @@ exists.
 
 ---
 
-## 5. The numbers in `probes.yaml` are placeholders
+## 5. Which numbers are measured, and which are still estimates
 
-Every threshold above is an estimate. PRD §7 Phase 1 measures the two that
-matter, and they should be set from measurement rather than from this document:
+Phase 1 (2026-09-10, full-card A10) measured one of the two and **not** the
+other. The distinction is load-bearing, so it is tabulated rather than described:
 
-- **actual cold-start time** → sets `startupProbe.failureThreshold`
-- **wedge-detection window** → sets the sidecar's patience
+| Number | Status | Value |
+|---|---|---|
+| Cold-start budget → `startupProbe.failureThreshold` | **MEASURED** | 45s warm, **153s cold** → `failureThreshold: 60` (300s) |
+| Liveness/readiness timings | derived from the above | unchanged |
+| **Wedge-detection window** → the sidecar's patience | **STILL AN ESTIMATE** | 120s, from §4, never validated |
 
-This is what DevOps meant by *"to be determined based on the tests"*, and it is
-why the file ships with the values marked rather than silently plausible.
+**The cold-start figure corrects this document in the dangerous direction.** It
+previously specified `failureThreshold: 24` — a 120s budget against a 153s
+measured cold start. Kubernetes would have killed the pod at 120s, and the
+replacement would also have started cold: a boot loop, not a slow start.
+`deploy/k8s/probes.yaml` now carries 60, about 2× the measurement. Generous on
+purpose — a loose startup probe costs a slower failure verdict, a tight one costs
+a loop that never converges.
+
+**The wedge window was not measured and is still a guess.** PRD §7 Phase 1 listed
+it as a deliverable; the engine never wedged naturally during the session, and
+inducing one was not attempted. Nothing in the gateway is designed to be correct
+only if 120 is the right number: the breaker requires **two consecutive**
+confirmations before acting on the signal, and alerts on the first. The gateway
+now exports `bkn301_gateway_upstream_wedge_stall_seconds` **continuously**,
+including well below the threshold, specifically so that the first real incident
+replaces this estimate with a measurement.
 
 ---
 

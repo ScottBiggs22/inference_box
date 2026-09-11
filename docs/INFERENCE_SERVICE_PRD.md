@@ -438,9 +438,16 @@ Proposed division of labour:
 
 | Probe | Endpoint | Checks | Why |
 |---|---|---|---|
-| `startupProbe` | vLLM `/health` | Engine initialised | vLLM's `/health` returns 200 only once the engine is up. `periodSeconds: 5`, `failureThreshold: 24` → a 120s load budget. **While this runs, Kubernetes suppresses the other two probes** — which is what makes them safe to tune tightly. |
-| `readinessProbe` | `/readyz` | Engine health **only** | See the warning below. `periodSeconds: 10`, `failureThreshold: 2`. |
-| `livenessProbe` | `/healthz` | Engine loop alive. **Never a test generation.** | Restart costs 30–60s of reload, so liveness is the last resort. `periodSeconds: 20`, `timeoutSeconds: 5`, `failureThreshold: 3` → ~60s to restart. |
+| `startupProbe` | vLLM `/health` | Engine initialised | vLLM's `/health` returns 200 only once the engine is up. `periodSeconds: 5`, ~~`failureThreshold: 24` → a 120s load budget~~ **`failureThreshold: 60` → 300s; measured 2026-09-10, see §4.5(6)**. **While this runs, Kubernetes suppresses the other two probes** — which is what makes them safe to tune tightly. |
+| `readinessProbe` | vLLM `/health` | Engine health **only** | See the warning below. `periodSeconds: 10`, `failureThreshold: 2`. |
+| `livenessProbe` | vLLM `/health` | Engine loop alive. **Never a test generation.** | Restart costs a full model reload, so liveness is the last resort. `periodSeconds: 20`, `timeoutSeconds: 5`, `failureThreshold: 3` → ~60s to restart. |
+
+> **The endpoints above are vLLM's, not the gateway's.** This table describes the
+> *vLLM* pod, which serves `/health`. The gateway exposes the same split on its
+> own process as `/healthz` (liveness) and `/readyz` (readiness) — an earlier
+> revision of this table named those two here, which would have pointed a vLLM
+> pod's probes at endpoints it does not serve. `deploy/k8s/probes.yaml` and
+> `PROBE_CONTRACT.md` §2 both have it right.
 
 > **Do not put queue depth in the readiness probe.** It is the intuitive design
 > and it fails badly: if `/readyz` goes red when the instance is *busy*,
@@ -572,7 +579,7 @@ Gateway (our service — the deliverable)
   │  token accounting · metadata audit log · SSE streaming passthrough
   │  circuit breaker · model allowlist
   ▼  private subnet, mTLS
-vLLM replicas (no public IP, --disable-log-requests)
+vLLM replicas (no public IP, --no-enable-log-requests)
 ```
 
 ### 5.3 Gateway requirements
@@ -901,9 +908,14 @@ change is a routing change.
 - [ ] Later, take delivery of the shared dev VM over the existing VPN. Confirm
       it is a full-card `VM.GPU.A10.1` and confirm its fault domain (§4.3).
       **Re-run the benchmark here before any number goes to procurement.**
-- [ ] `vllm serve Qwen/Qwen3-8B-AWQ --max-model-len 8192
-      --gpu-memory-utilization 0.90 --enable-prefix-caching
-      --disable-log-requests`, pinned to a model revision hash.
+- [x] ~~`vllm serve ... --enable-prefix-caching --disable-log-requests`~~
+      **Corrected 2026-09-10.** `--disable-log-requests` DOES NOT EXIST in vLLM
+      0.28.0 and `vllm serve` fails to start with it; `--enable-prefix-caching`
+      is the default in the V1 engine. As actually run:
+      `vllm serve Qwen/Qwen3-8B-AWQ --max-model-len 8192
+      --gpu-memory-utilization 0.90 --no-enable-log-requests
+      --no-enable-log-outputs --revision 4da05a8edb55c6046cce958586c33b61da07bb79`.
+      See PHASE1_RESULTS.md §2.
 - [ ] Dockerise: pinned vLLM image, model baked or pulled from an internal
       mirror with checksum verification, non-root, healthcheck.
 - [ ] Confirm the §3.3 config-B memory math against `nvidia-smi` and vLLM's

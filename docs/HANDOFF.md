@@ -25,9 +25,16 @@ gh repo create bkn301-inference --private --source=. --push
 
 In `baas-poc-templates`, the working remote is **`raghav`**
 (`github.com/raghavsingh15/fd-llm-chatbot`), not `origin`. Its branch is
-`cloud_infra_prep`, and **the Phase 0 changes there are uncommitted on purpose** —
-`CLAUDE.md` now forbids push/merge without approval, and the commit was never
-asked for.
+`cloud_infra_prep`.
+
+~~The Phase 0 changes there are uncommitted on purpose.~~ **Corrected
+2026-09-11: they were committed as `d12414b` ("Phase 0 of the inference stack:
+security gates, eval set, vllm backend", 2026-09-10) and pushed to
+`raghav/feat/inference-phase0`.** The only dirty files in that tree now are two
+rebuilt FAISS index binaries (`knowledge/.faiss_index.{json,bin}`). This mattered
+enough to correct because the stated reason for leaving them uncommitted was a
+standing constraint, and a session reading the old sentence would have gone
+looking for uncommitted work that is not there.
 
 ---
 

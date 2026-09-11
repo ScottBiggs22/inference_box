@@ -159,9 +159,14 @@ def live_stub():
     for proc in procs:
         proc.terminate()
         try:
-            proc.wait(timeout=10)
+            # Short, deliberately. --stub-wedge holds a request open forever by
+            # design, so uvicorn's graceful shutdown waits for an in-flight
+            # request that will never finish; a 10s grace there is 10s of dead
+            # time in the suite for no benefit. SIGKILL is fine for a fake.
+            proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait(timeout=5)
 
 
 @pytest.fixture

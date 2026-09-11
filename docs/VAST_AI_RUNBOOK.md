@@ -199,17 +199,22 @@ vllm serve --help 2>&1 | grep -iE 'prefix-caching|log-requests|max-model-len'
 
 `--enable-prefix-caching` is deliberately *absent* from the command above.
 Automatic prefix caching is on by default in vLLM's V1 engine (PRD §3.6 relies
-on this), and the flag's spelling and default have moved across releases — as
-has `--disable-log-requests`. Record what `--help` actually says for your
-pinned tag in `PHASE1_RESULTS.md` §2 rather than assuming either way; a flag
-that no longer exists is a startup failure, and one that silently became a
-no-op is worse.
+on this), and the flag's spelling and default have moved across releases.
+
+**This caution was vindicated, and then some.** On 0.28.0 `--disable-log-requests`
+had not moved — it was **removed outright**, and `vllm serve` fails to start with
+it. The replacement is `--no-enable-log-requests` / `--no-enable-log-outputs`,
+with the polarity inverted so no-retention is now the default. Keep recording
+what `--help` actually says for your pinned tag in `PHASE1_RESULTS.md` §2 rather
+than assuming either way; a flag that no longer exists is a startup failure, and
+one that silently became a no-op is worse.
 
 ### Record three things as it boots — all Phase 1 deliverables
 
 **1. Cold-start time**, from process start to `/health` returning 200. This
-sets `startupProbe.failureThreshold` in `deploy/k8s/probes.yaml`, a placeholder
-today.
+sets `startupProbe.failureThreshold` in `deploy/k8s/probes.yaml`. **Measured
+2026-09-10: 45s warm, 153s cold → `failureThreshold: 60`.** No longer a
+placeholder; re-measure only if the image or the weight source changes.
 
 ```bash
 # In a second shell, started at the same moment as vllm serve:

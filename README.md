@@ -26,7 +26,7 @@ Gateway  ← this repo
   │  authN/authZ · request validation · model allowlist
   │  metadata-only audit · SSE passthrough
   ▼  private subnet
-vLLM replicas (no public IP, --disable-log-requests)
+vLLM replicas (no public IP, --no-enable-log-requests)
 ```
 
 ---
@@ -137,23 +137,38 @@ consuming end (PRD §6.3 C2).
 
 ---
 
+## Observability
+
+`/metrics` is **unauthenticated on the main port**, like any Prometheus target —
+restrict it with a network policy. That is why no label carries a `keyid`, an
+upstream URL, or any caller-supplied string: on a surface with no access control
+the protection has to be in what is collected, not in who may read it.
+
+The gateway also scrapes each replica's own `/metrics` to derive the wedge
+signature from `PROBE_CONTRACT.md` §4 — `num_requests_waiting > 0` while
+`generation_tokens_total` stays flat. It does **not** re-export vLLM's series;
+point Prometheus at vLLM directly for those. `bkn301_gateway_upstream_wedge_stall_seconds`
+is exported continuously, including below the threshold, because that threshold
+is still an estimate and this series is what will eventually replace it.
+
 ## Not built yet
 
-The first slice stops short of these deliberately. They are PRD §7 Phase 2:
+PRD §7 Phase 2, in dependency order rather than the order §7 lists them. The
+first two have landed:
 
-In the order they will land, which is dependency order rather than the order
-§7 lists them:
-
-1. **`/metrics`** — `prometheus-client` is already a dependency with no
-   endpoint. Both the breaker and `PROBE_CONTRACT.md` §4's wedge detection
-   consume it, so it comes first.
-2. **Circuit breaker and health-aware routing** — `UpstreamPool.pick()` is
-   round-robin and `health()` is not wired into the router.
+1. ~~**`/metrics`**~~ — done. Plus the vLLM scraper and wedge detector.
+2. ~~**Circuit breaker and health-aware routing**~~ — done. `pick()` skips open
+   replicas and raises when all are open, which the route turns into a fast 503
+   rather than a two-minute hang.
 3. **Per-key token budgets and concurrency caps** — `ApiKeyRecord` already
-   carries `token_budget` and `max_concurrency`. These need real streamed token
-   counts, and `stream_options.include_usage` now works end to end through the
-   SSE passthrough, so the plumbing is in place.
-4. **mTLS gateway→vLLM.**
+   carries `token_budget` and `max_concurrency`. Note what is *not* yet true:
+   `stream_options.include_usage` works end to end on the wire, but the gateway
+   does not parse the usage frame out of its own passthrough, so every streamed
+   request still audits zero tokens. `bkn301_gateway_requests_missing_usage_total`
+   counts the gap. That parsing is this slice's work.
+4. **Bounded retries with jitter on 429/503** — the breaker records outcomes but
+   nothing retries yet.
+5. **mTLS gateway→vLLM.**
 
 ---
 
@@ -178,7 +193,7 @@ must not reach a rented host — so it runs on the OCI card), and these are
 **rented-box numbers to be re-confirmed** on `VM.GPU.A10.1` before anyone
 multiplies them for procurement.
 
-`ruff check . && pytest` is green (**108 tests**), both image targets build, and
+`ruff check . && pytest` is green (**192 tests**), both image targets build, and
 the compose stack is verified end to end.
 
 **Start here:**
