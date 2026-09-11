@@ -7,6 +7,7 @@ decode slot on a card shared by at most five concurrent users.
 """
 from __future__ import annotations
 
+import logging
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -18,6 +19,7 @@ from gateway.auth import Principal, require_principal
 from gateway.config import settings
 from gateway.upstream.client import pool
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["inference"])
 
 
@@ -160,7 +162,16 @@ async def chat_completions(
         outcome="ok" if resp.status_code < 400 else "http_error",
     ).inc()
 
-    payload = resp.json() if resp.status_code < 400 else {}
+    try:
+        payload = resp.json() if resp.status_code < 400 else {}
+    except Exception as e:
+        # A 200 carrying a non-JSON body used to raise here and surface as a 500
+        # from the one layer whose entire job is rejecting malformed traffic
+        # before it becomes an error.
+        metrics.upstream_requests_total.labels(
+            upstream=_upstream_label(upstream), outcome="bad_response").inc()
+        raise _reject(status.HTTP_502_BAD_GATEWAY,
+                      "upstream_bad_response", principal, model, started) from e
     usage = payload.get("usage") or {}
     _record_usage(model, usage)
     audit_log.write(
@@ -205,27 +216,77 @@ def _record_usage(model: str | None, usage: dict) -> None:
         metrics.tokens_total.labels(model=label, kind="completion").inc(completion)
 
 
+# An upstream error body is not protocol-bounded, and this one is only read so
+# the connection can be reused and the failure logged. Reading it is not
+# "buffering the stream": PRD §6.3 C2 protects the PAYLOAD, and an error is not
+# the payload.
+_MAX_ERROR_BODY_BYTES = 64 * 1024
+
+
+async def _drain_error(resp) -> None:
+    """Consume a bounded prefix of an error response, then close it."""
+    try:
+        seen = 0
+        async for chunk in resp.aiter_raw():
+            seen += len(chunk)
+            if seen >= _MAX_ERROR_BODY_BYTES:
+                break
+    except Exception as e:  # noqa: BLE001 - already on the failure path
+        logger.debug("draining upstream error body failed: %s", type(e).__name__)
+    finally:
+        await resp.aclose()
+
+
 async def _stream(url: str, body: dict, principal: Principal,
                   model: str | None, started: float, upstream: str):
     """Relay SSE frames as they arrive.
 
-    Token counts are not available here: usage is not carried on every frame,
-    and assembling the completion to count it would defeat the purpose of
-    streaming. The audit record therefore carries zeros with streamed=true --
-    which is honest, and better than an invented number. Recovering real counts
-    means asking the upstream for `stream_options.include_usage`, which is
-    Phase 2 work alongside the per-key token budget that would need it.
+    THE STATUS IS RESOLVED BEFORE ANY HEADER IS COMMITTED
+    ----------------------------------------------------
+    This used to build the StreamingResponse first and read the upstream status
+    inside the generator -- which runs after the 200 is already on the wire. An
+    upstream 503 therefore reached the caller as **HTTP 200** carrying an error
+    body dressed as a stream, and the real status reached only the audit log.
+    That also left the circuit breaker with no client-visible status to key on.
+
+    `client.stream()` is just `send(request, stream=True)` with an `aclose()` in a
+    finally, so calling `send()` directly gives the status and headers with the
+    body still unread, and the context-manager problem disappears. Ownership rule:
+    whoever receives a non-error response owns `aclose()`, which is why it sits in
+    the generator's finally beside the audit write.
+
+    Token counts are still not available here: usage is not carried on every
+    frame, and assembling the completion to count it would defeat the purpose of
+    streaming. The audit record carries zeros with streamed=true, which is honest
+    and better than an invented number. Parsing `stream_options.include_usage`
+    out of the passthrough is the per-key-budget slice's work;
+    bkn301_gateway_requests_missing_usage_total counts the gap meanwhile.
     """
+    client = pool.client
+    try:
+        request = client.build_request("POST", url, json=body)
+        resp = await client.send(request, stream=True)
+    except Exception as e:
+        metrics.upstream_requests_total.labels(
+            upstream=_upstream_label(upstream), outcome="unreachable").inc()
+        raise _reject(status.HTTP_502_BAD_GATEWAY,
+                      "upstream_unreachable", principal, model, started) from e
+
+    metrics.upstream_requests_total.labels(
+        upstream=_upstream_label(upstream),
+        outcome="ok" if resp.status_code < 400 else "http_error",
+    ).inc()
+
+    if resp.status_code >= 400:
+        await _drain_error(resp)
+        raise _reject(resp.status_code, "upstream_error",
+                      principal, model, started)
+
     async def relay():
-        status_code = 200
         first_byte = True
+        broken = False
         try:
-            async with pool.client.stream("POST", url, json=body) as resp:
-                status_code = resp.status_code
-                metrics.upstream_requests_total.labels(
-                    upstream=_upstream_label(upstream),
-                    outcome="ok" if status_code < 400 else "http_error",
-                ).inc()
+            try:
                 async for chunk in resp.aiter_raw():
                     if first_byte and chunk:
                         # TTFT is only measurable on this path. Phase 1 measured
@@ -236,7 +297,18 @@ async def _stream(url: str, body: dict, principal: Principal,
                             model=metrics.safe_model(model)
                         ).observe(time.perf_counter() - started)
                     yield chunk
+            except Exception:  # noqa: BLE001
+                # A truncated SSE stream is indistinguishable from a SHORT ANSWER
+                # to a consumer that stops at [DONE] -- which is what
+                # openai_http.py does. On a system reporting financial figures
+                # that is the worst available failure mode, so say so explicitly
+                # and deliberately do not send [DONE].
+                broken = True
+                metrics.record_rejection("upstream_stream_broken")
+                yield b'data: {"error": {"message": "upstream stream failed", '
+                yield b'"type": "upstream_stream_broken"}}\n\n'
         finally:
+            await resp.aclose()
             # No usage frame is parsed out of the passthrough yet, so every
             # streamed request is an unobserved one. Counted, not guessed at.
             metrics.requests_missing_usage_total.labels(
@@ -249,13 +321,17 @@ async def _stream(url: str, body: dict, principal: Principal,
                     subject=principal.subject,
                     auth_method=principal.method,
                     model=model,
-                    status=status_code,
+                    status=resp.status_code,
                     latency_ms=(time.perf_counter() - started) * 1000.0,
                     prompt_tokens=0,
                     completion_tokens=0,
                     upstream=upstream,
+                    reason="upstream_stream_broken" if broken else None,
                     streamed=True,
                 )
             )
 
-    return StreamingResponse(relay(), media_type="text/event-stream")
+    # Headers are gateway-generated only. Copying the upstream's would carry a
+    # Content-Length or Content-Encoding onto a StreamingResponse and corrupt it.
+    return StreamingResponse(relay(), status_code=200,
+                             media_type="text/event-stream")

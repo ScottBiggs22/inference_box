@@ -87,6 +87,27 @@ def client(key_store, audit_file, dead_upstream):
 
 
 @pytest.fixture
+def stub_upstream(live_stub):
+    """Point the gateway's pool at a real stub subprocess, and restore after.
+
+    There was no fixture for this: `client` always pulls in `dead_upstream`, so
+    until now NO test ever streamed a real body through the gateway. That gap is
+    why the streaming path could return 200 on an upstream 503 undetected.
+    """
+    from gateway.upstream.client import pool
+
+    original = pool.urls
+
+    def _point(*extra_args: str) -> str:
+        base = live_stub(*extra_args)
+        pool.urls = [f"{base}/v1"]
+        return base
+
+    yield _point
+    pool.urls = original
+
+
+@pytest.fixture
 def live_stub():
     """A real `stub.server` subprocess on a free port. Returns a factory.
 
@@ -129,6 +150,93 @@ def live_stub():
             except Exception:  # noqa: BLE001 - still booting
                 _time.sleep(0.1)
         raise RuntimeError("stub did not become healthy within 30s")
+
+    yield _start
+
+    for proc in procs:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+@pytest.fixture
+def live_gateway(live_stub, tmp_path):
+    """The real gateway under uvicorn, on a real socket, in front of a real stub.
+
+    A subprocess rather than a TestClient, for the same reason `live_stub` is one
+    -- and it matters more here. `httpx.ASGITransport`, which TestClient uses,
+    COLLECTS a streaming response before handing it back, so `iter_raw()` over a
+    TestClient always yields one chunk with zero spread no matter what the app
+    did. Any test of unbuffered passthrough written against TestClient is
+    therefore testing httpx, not the gateway, and would pass just as happily
+    against an implementation that buffered everything.
+
+    Returns (base_url, api_key).
+    """
+    import os
+    import socket
+    import subprocess
+    import sys
+    import time as _time
+    from pathlib import Path
+
+    import httpx
+
+    from gateway.auth.keys import KeyStore, mint_key
+
+    procs: list[subprocess.Popen] = []
+
+    def _start(*stub_args: str) -> tuple[str, str]:
+        upstream = live_stub(*stub_args)
+
+        pepper = "live-gateway-test-pepper"
+        store_path = tmp_path / "gw-keys.json"
+        # mint_key() hashes with settings.API_KEY_PEPPER from THIS process's
+        # already-constructed settings object, so setting only the environment
+        # variable for the subprocess mints a key the subprocess cannot verify.
+        # Both sides have to agree.
+        previous, settings.API_KEY_PEPPER = settings.API_KEY_PEPPER, pepper
+        try:
+            store = KeyStore(store_path)
+            plaintext, record = mint_key(scopes=["chat"], label="live-gateway")
+            store.add(record)
+            store.save()
+        finally:
+            settings.API_KEY_PEPPER = previous
+
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0))
+            port = sk.getsockname()[1]
+
+        env = {
+            **os.environ,
+            "API_KEY_STORE_PATH": str(store_path),
+            "API_KEY_PEPPER": pepper,
+            "UPSTREAM_URLS": f"{upstream}/v1",
+            "AUDIT_LOG_PATH": str(tmp_path / "gw-audit.jsonl"),
+            "UPSTREAM_METRICS_POLL_SEC": "1.0",
+        }
+        # S603: this interpreter plus literals from the test body.
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-m", "uvicorn", "gateway.main:app",
+             "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
+            cwd=Path(__file__).resolve().parent.parent, env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        procs.append(proc)
+        base = f"http://127.0.0.1:{port}"
+        deadline = _time.time() + 30
+        while _time.time() < deadline:
+            if proc.poll() is not None:
+                raise RuntimeError(f"gateway exited early with {proc.returncode}")
+            try:
+                if httpx.get(f"{base}/healthz", timeout=0.5).status_code == 200:
+                    return base, plaintext
+            except Exception:  # noqa: BLE001 - still booting
+                _time.sleep(0.1)
+        raise RuntimeError("gateway did not become healthy within 30s")
 
     yield _start
 
