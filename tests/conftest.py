@@ -65,9 +65,12 @@ def dead_upstream(monkeypatch):
     from gateway.upstream.client import pool
 
     original = pool.urls
-    pool.urls = ["http://127.0.0.1:9/v1"]
+    # set_urls rather than assigning to pool.urls: the routing counter and the
+    # breaker registry are both keyed to the list, so a bare assignment leaves
+    # stale state behind.
+    pool.set_urls(["http://127.0.0.1:9/v1"])
     yield
-    pool.urls = original
+    pool.set_urls(original)
 
 
 @pytest.fixture
@@ -100,11 +103,11 @@ def stub_upstream(live_stub):
 
     def _point(*extra_args: str) -> str:
         base = live_stub(*extra_args)
-        pool.urls = [f"{base}/v1"]
+        pool.set_urls([f"{base}/v1"])
         return base
 
     yield _point
-    pool.urls = original
+    pool.set_urls(original)
 
 
 @pytest.fixture

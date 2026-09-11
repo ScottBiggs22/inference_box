@@ -123,6 +123,28 @@ class Settings(BaseSettings):
     UPSTREAM_READ_TIMEOUT_SEC: float = Field(
         default_factory=lambda: float(os.getenv("UPSTREAM_READ_TIMEOUT_SEC", "120.0")))
 
+    # ── Resilience ───────────────────────────────────────────────────────────
+    # A breaker with no off switch is a new way to have an outage. When false,
+    # pick() is plain round-robin and nothing is ever withheld from routing.
+    BREAKER_ENABLED: bool = Field(default_factory=lambda: _flag("BREAKER_ENABLED", "true"))
+    # How long a replica stays out of rotation before the first reclose probe.
+    # Doubles per failed probe up to 60s, which keeps probing at once a minute
+    # during a long outage while staying well under the measured 153s cold start
+    # -- so a genuinely restarted pod is found within a minute of being ready.
+    BREAKER_OPEN_SEC: float = Field(
+        default_factory=lambda: float(os.getenv("BREAKER_OPEN_SEC", "15.0")))
+    # Reclose probes and /readyz both use this. Deliberately NOT the 120s read
+    # timeout: an instance that accepts a connection and never answers must fail
+    # a probe quickly, not hold the probe open for two minutes. ~12x the measured
+    # 167ms direct p50.
+    UPSTREAM_PROBE_TIMEOUT_SEC: float = Field(
+        default_factory=lambda: float(os.getenv("UPSTREAM_PROBE_TIMEOUT_SEC", "2.0")))
+    # How often the prober wakes. It does nothing but read local state while every
+    # replica is closed, so this is cheap; it bounds how promptly an open replica
+    # is retried, not how often anything is polled.
+    BREAKER_PROBE_TICK_SEC: float = Field(
+        default_factory=lambda: float(os.getenv("BREAKER_PROBE_TICK_SEC", "1.0")))
+
     # ── Authentication ───────────────────────────────────────────────────────
     # Where the API key store lives. A JSON file is the Phase 1 answer because it
     # is inspectable and needs no extra infrastructure; the loader is behind an

@@ -52,6 +52,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
+from pydantic import BaseModel
 
 STUB_MODEL = "Qwen/Qwen3-8B-AWQ"
 
@@ -82,6 +83,20 @@ class StubState:
         # socket stays open and /health and /metrics keep answering 200. That is
         # what a wedged engine looks like, and why no HTTP probe can see one.
         self.wedge = False
+        # `fail_after` counts REQUESTS, which cannot express recovery: once the
+        # gateway's breaker opens it stops sending chat requests, so a
+        # request-counted heal never advances and half-open -> closed is
+        # untestable. These two are driven by time and by an out-of-band control
+        # call instead.
+        self.fail_until: float | None = None
+        self.control_enabled = False
+        # Which surface fails. `chat` (the default, and the pre-existing
+        # behaviour) leaves /health and /v1/models answering 200 while chat 503s
+        # -- which is not a test convenience but the fixture that proves a
+        # /models reclose probe is weak, because a really wedged vLLM behaves
+        # exactly that way: the API server is not the engine loop.
+        self.fail_mode = "chat"
+        self.fail_status = 503
         # Admission control, so queue depth is a consequence of concurrency
         # rather than a decoration. Built lazily: a semaphore binds to the loop
         # that first awaits it, and StubState is constructed at import.
@@ -122,8 +137,51 @@ def _completion_text(body: dict, n_tokens: int) -> str:
     return f"<think>\n{_deterministic_text('think' + _seed_of(body), 40)}\n</think>\n\n{text}"
 
 
+class Control(BaseModel):
+    """Out-of-band switches. Only mounted with --stub-control."""
+
+    fail: bool | None = None
+    fail_status: int | None = None
+    fail_mode: str | None = None
+    latency: float | None = None
+    wedge: bool | None = None
+
+
+@app.post("/control")
+def control(body: Control):
+    """Flip failure modes without sending traffic.
+
+    Exists because the breaker stops sending requests the moment it opens, so a
+    recovery triggered by request count can never fire. A test sets `fail` and
+    then only has to wait for the prober.
+    """
+    if not state.control_enabled:
+        raise HTTPException(status_code=404, detail="not found")
+    if body.fail is not None:
+        state.fail_after = 0 if body.fail else None
+        state.fail_until = None
+    if body.fail_status is not None:
+        state.fail_status = body.fail_status
+    if body.fail_mode is not None:
+        state.fail_mode = body.fail_mode
+    if body.latency is not None:
+        state.latency = body.latency
+    if body.wedge is not None:
+        state.wedge = body.wedge
+    return {"ok": True, "fail_after": state.fail_after, "wedge": state.wedge}
+
+
+def _should_fail() -> bool:
+    if state.fail_until is not None and time.time() >= state.fail_until:
+        state.fail_after = None
+        state.fail_until = None
+    return state.fail_after is not None and state.requests > state.fail_after
+
+
 @app.get("/health")
 def health():
+    if state.fail_mode == "all" and _should_fail():
+        raise HTTPException(status_code=state.fail_status, detail="stub: simulated outage")
     """vLLM returns 200 here only once the engine is up. Startup probe target."""
     return {"status": "ok"}
 
@@ -190,6 +248,8 @@ def metrics() -> str:
 
 @app.get("/v1/models")
 def list_models():
+    if state.fail_mode == "all" and _should_fail():
+        raise HTTPException(status_code=state.fail_status, detail="stub: simulated outage")
     return {
         "object": "list",
         "data": [
@@ -208,10 +268,12 @@ async def chat_completions(request: Request):
     body = await request.json()
     state.requests += 1
 
-    if state.fail_after is not None and state.requests > state.fail_after:
-        # 503 rather than 500: it is the retryable status the gateway's bounded
-        # retry-with-jitter and its breaker both key on.
-        raise HTTPException(status_code=503, detail="stub: simulated overload")
+    if _should_fail():
+        # 503 by default: the retryable status the gateway's bounded retry and
+        # its breaker both key on. --stub-fail-status makes the differential
+        # weighting (429 never trips, 5xx does) testable.
+        raise HTTPException(status_code=state.fail_status,
+                            detail="stub: simulated overload")
 
     if not body.get("messages"):
         raise HTTPException(status_code=400, detail="messages is required")
@@ -342,6 +404,17 @@ def main() -> None:
                     help="Seconds of simulated decode time per request.")
     ap.add_argument("--stub-fail-after", type=int, default=None,
                     help="Return 503 after this many requests, for the breaker.")
+    ap.add_argument("--stub-control", action="store_true",
+                    help="Mount POST /control. Off by default: this server has "
+                         "no authentication of any kind.")
+    ap.add_argument("--stub-fail-seconds", type=float, default=None,
+                    help="Heal this many seconds after failures begin. Time-based "
+                         "because a breaker stops sending traffic once it opens.")
+    ap.add_argument("--stub-fail-mode", choices=("chat", "all"), default="chat",
+                    help="'chat' leaves /health and /v1/models green, as a wedged "
+                         "engine does. 'all' fails every surface.")
+    ap.add_argument("--stub-fail-status", type=int, default=503,
+                    help="Status to fail with (503, 429, 500).")
     ap.add_argument("--stub-wedge", action="store_true",
                     help="Accept chat requests, queue them, and never answer -- "
                          "the wedge signature PROBE_CONTRACT.md 4 describes.")
@@ -353,6 +426,11 @@ def main() -> None:
     state.latency = args.stub_latency
     state.fail_after = args.stub_fail_after
     state.wedge = args.stub_wedge
+    state.control_enabled = args.stub_control
+    state.fail_mode = args.stub_fail_mode
+    state.fail_status = args.stub_fail_status
+    if args.stub_fail_seconds is not None:
+        state.fail_until = time.time() + args.stub_fail_seconds
     state.max_concurrent = args.stub_max_concurrent
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

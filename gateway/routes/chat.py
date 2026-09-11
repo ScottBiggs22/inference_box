@@ -8,6 +8,7 @@ decode slot on a card shared by at most five concurrent users.
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -17,7 +18,7 @@ from gateway import metrics
 from gateway.audit import AuditRecord, audit_log
 from gateway.auth import Principal, require_principal
 from gateway.config import settings
-from gateway.upstream.client import pool
+from gateway.upstream.client import AllReplicasOpen, pool
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["inference"])
@@ -38,7 +39,8 @@ def _upstream_label(url: str) -> str:
 
 
 def _reject(status_code: int, reason: str, principal: Principal,
-            model: str | None, started: float) -> HTTPException:
+            model: str | None, started: float,
+            headers: dict[str, str] | None = None) -> HTTPException:
     # Counted from the same place, with the same vocabulary, as the audit record
     # -- so the two cannot drift apart.
     metrics.record_rejection(reason)
@@ -58,7 +60,7 @@ def _reject(status_code: int, reason: str, principal: Principal,
             reason=reason,
         )
     )
-    return HTTPException(status_code=status_code, detail=reason)
+    return HTTPException(status_code=status_code, detail=reason, headers=headers)
 
 
 def _estimate_prompt_tokens(messages: list[dict]) -> int:
@@ -143,7 +145,18 @@ async def chat_completions(
         body["max_tokens"] = min(wanted, settings.MAX_COMPLETION_TOKENS)
 
     streaming = bool(body.get("stream"))
-    upstream = pool.pick()
+    try:
+        upstream = pool.pick()
+    except AllReplicasOpen as e:
+        # 503, not 502. 502 asserts "I reached the upstream and it was broken";
+        # 503 says "I am not accepting this right now, try later", which is the
+        # truthful and retryable status here -- and the one the OpenAI client
+        # libraries already back off on.
+        raise _reject(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "all_replicas_open",
+            principal, model, started,
+            headers={"Retry-After": str(max(1, math.ceil(e.retry_after)))},
+        ) from e
     url = f"{upstream.rstrip('/')}/chat/completions"
 
     if streaming:
@@ -152,11 +165,13 @@ async def chat_completions(
     try:
         resp = await pool.client.post(url, json=body)
     except Exception as e:
+        pool.record(upstream, exc=e)
         metrics.upstream_requests_total.labels(
             upstream=_upstream_label(upstream), outcome="unreachable").inc()
         raise _reject(status.HTTP_502_BAD_GATEWAY,
                       "upstream_unreachable", principal, model, started) from e
 
+    pool.record(upstream, status_code=resp.status_code)
     metrics.upstream_requests_total.labels(
         upstream=_upstream_label(upstream),
         outcome="ok" if resp.status_code < 400 else "http_error",
@@ -267,11 +282,13 @@ async def _stream(url: str, body: dict, principal: Principal,
         request = client.build_request("POST", url, json=body)
         resp = await client.send(request, stream=True)
     except Exception as e:
+        pool.record(upstream, exc=e)
         metrics.upstream_requests_total.labels(
             upstream=_upstream_label(upstream), outcome="unreachable").inc()
         raise _reject(status.HTTP_502_BAD_GATEWAY,
                       "upstream_unreachable", principal, model, started) from e
 
+    pool.record(upstream, status_code=resp.status_code)
     metrics.upstream_requests_total.labels(
         upstream=_upstream_label(upstream),
         outcome="ok" if resp.status_code < 400 else "http_error",

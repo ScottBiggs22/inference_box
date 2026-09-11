@@ -46,6 +46,38 @@ async def _scrape_loop() -> None:
         await asyncio.sleep(settings.UPSTREAM_METRICS_POLL_SEC)
 
 
+async def _breaker_prober() -> None:
+    """Reclose probes for open replicas, and the wedge signal for closed ones.
+
+    Deliberately lazy about the probing half: while everything is closed this
+    loop does nothing but read local state, so a healthy gateway generates no
+    background traffic at all and the unit suite does not acquire a task hammering
+    a closed port.
+    """
+    while True:
+        try:
+            now = time.monotonic()
+            for breaker in pool.breakers:
+                # A closed replica is still watched for the wedge signature: a
+                # wedged engine answers /health and serves no tokens, so nothing
+                # else in the system would notice.
+                if breaker.state.name == "CLOSED":
+                    breaker.record_wedge(
+                        upstream_metrics.wedge_suspected(breaker.url), now)
+                    continue
+                if breaker.due_for_probe(now):
+                    ok = await pool.probe(breaker.url)
+                    breaker.record_probe(
+                        ok, time.monotonic(),
+                        wedge_suspected=upstream_metrics.wedge_suspected(breaker.url),
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning("breaker prober failed: %s: %s", type(e).__name__, e)
+        await asyncio.sleep(settings.BREAKER_PROBE_TICK_SEC)
+
+
 async def _loop_lag_monitor(interval: float = 0.25) -> None:
     """Publish how late a short sleep wakes up.
 
@@ -93,6 +125,7 @@ async def lifespan(app: FastAPI):
     tasks = [
         asyncio.create_task(_scrape_loop(), name="upstream-metrics"),
         asyncio.create_task(_loop_lag_monitor(), name="loop-lag"),
+        asyncio.create_task(_breaker_prober(), name="breaker-prober"),
     ]
     try:
         yield

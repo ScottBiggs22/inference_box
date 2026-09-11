@@ -35,6 +35,12 @@ async def readyz(response: Response) -> dict:
     still serve if one of several vLLM instances is down -- that is what having
     replicas is for -- so a per-replica failure belongs in the router's health
     tracking and in an alert, not in this endpoint's verdict.
+
+    AN OPEN BREAKER DOES NOT MAKE THIS RED, deliberately, and the breaker state
+    is reported as a field instead. The gateway is not the broken component:
+    pulling its pod out of the endpoint list would fix nothing and would remove
+    the one thing correctly reporting the failure. Same reasoning as §3 of
+    PROBE_CONTRACT.md, one layer up.
     """
     try:
         replicas = await pool.health()
@@ -44,6 +50,8 @@ async def readyz(response: Response) -> dict:
 
     if not any(replicas.values()):
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {"status": "unavailable", "upstreams": replicas}
+        return {"status": "unavailable", "upstreams": replicas,
+                "breakers": pool.breakers.snapshot()}
 
-    return {"status": "ok", "upstreams": replicas}
+    return {"status": "ok", "upstreams": replicas,
+            "breakers": pool.breakers.snapshot()}
