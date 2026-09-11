@@ -136,6 +136,17 @@ class Settings(BaseSettings):
     # on the same disk.
     API_KEY_PEPPER: str = Field(default_factory=lambda: os.getenv("API_KEY_PEPPER", ""))
 
+    # How many argon2id verifications may run at once in the worker threadpool.
+    # NOT a tuning knob to raise casually: argon2-cffi defaults to a 64 MiB
+    # memory cost with parallelism 4, so this number multiplies into both RSS and
+    # CPU lanes, and it is reachable by unauthenticated traffic (an unknown keyid
+    # still pays a full hash, deliberately, so latency cannot enumerate key ids).
+    # anyio's default threadpool limit is 40, which measured WORSE than running
+    # the hash inline. Six is sized against a card with ~5 decode slots. See the
+    # note at the top of gateway/auth/__init__.py for the measurements.
+    AUTH_VERIFY_CONCURRENCY: int = Field(
+        default_factory=lambda: int(os.getenv("AUTH_VERIFY_CONCURRENCY", "6")))
+
     # PEM public key (or JWKS-derived) for the service-to-service path. ASYMMETRIC
     # ONLY, and the asymmetry is the point: the C# API signs with a private key,
     # the gateway verifies with the public one, so a gateway compromise yields no
