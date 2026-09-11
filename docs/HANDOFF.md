@@ -334,21 +334,78 @@ figure rather than an estimate.
 
 ---
 
-## 6. What is deliberately not built
+## 6. What is deliberately not built — and what Phase 1 changed about it
 
-Gateway, all PRD §7 Phase 2. Seams exist for each:
+All PRD §7 Phase 2. **Agreed order is dependency order, not the order §7 lists
+them:** `/metrics` → breaker → budgets → mTLS. Each seam already exists, and
+several now have a measurement attached that did not exist before.
 
-- per-key **token budgets** and **concurrency caps** — `ApiKeyRecord` already
-  carries `token_budget` and `max_concurrency`; nothing enforces them
-- **circuit breaker** and health-aware routing — `UpstreamPool.pick()` is
-  round-robin; `health()` exists and is unused by the router
-- **mTLS** gateway→vLLM
-- **`/metrics`** — `prometheus-client` is a declared dependency, no endpoint yet
-- **streaming token counts** — the audit record honestly logs zeros with
-  `streamed=true`; real counts need `stream_options.include_usage` upstream
+### 1. `/metrics` — first, because two other things consume it
 
-App side: **S3** (`_cache_key` missing `role`), **S6** (Redis unauthenticated and
-published), **S7–S9**. Plus E1–E3 above.
+`prometheus-client` is a declared dependency (`pyproject.toml:48`) with no
+endpoint. `METRICS_ENABLED` already exists in `config.py`. Needs
+`gateway/metrics.py` + `gateway/routes/metrics.py`.
+
+**Keep `keyid` out of the labels** — unbounded cardinality, and it drags tenant
+identity onto a scrape surface that is not access-controlled the way the audit
+log is. Label on `status` / `model` / `auth_method`.
+
+Also needs a scraper for vLLM's own `/metrics` to compute the wedge signature
+from `PROBE_CONTRACT.md` §4. **The real series names are now known** — captured
+in `results/phase1-vastai-a10/vllm-metrics-final.txt` from the live server, so
+this can be written against reality rather than against the doc:
+`vllm:num_requests_running`, `vllm:num_requests_waiting`,
+`vllm:num_requests_waiting_by_reason{reason=capacity|deferred}`,
+`vllm:prefix_cache_hits_total`, `vllm:prefix_cache_queries_total`,
+`vllm:prompt_tokens_by_source_total{source=local_compute|local_cache_hit}`.
+
+### 2. Circuit breaker + health-aware routing
+
+`UpstreamPool.pick()` (`upstream/client.py:73-81`) is round-robin;
+`health()` (`:83-92`) exists and the router never calls it. `stub/server.py
+--stub-fail-after N` exists for exactly this test.
+
+**Still unmeasured: the wedge-detection window.** Phase 1 never wedged the
+engine naturally, so `PROBE_CONTRACT.md` §4's "120s, not 20s" is still an
+estimate. It belongs here, with the breaker, and inducing a wedge deliberately
+is the way to get it.
+
+### 3. Per-key token budgets + concurrency caps
+
+`ApiKeyRecord` already carries `token_budget` and `max_concurrency`
+(`auth/keys.py:77-78`); nothing enforces them. `check_quota` is the named seam.
+
+**The blocker here is gone.** The audit record used to log zeros for streamed
+requests because usage was unavailable — `stream_options.include_usage` is now
+**confirmed working end to end through the gateway's SSE passthrough**, verified
+against the real vLLM on 2026-09-10. `loadgen.py` already sends it and reads the
+usage frame, including the `choices: []` shape that a naive consumer crashes on.
+So real streamed token counts are wiring, not research.
+
+**A measured design input:** argon2id verification costs **~77 ms per request**
+(`/healthz` 1.2 ms vs `/v1/models` 77.3 ms). That is fine in front of a 10 s
+generation, but it means a concurrency cap implemented as "verify then queue"
+burns 77 ms of CPU per rejected request too. Verify cheaply first, or cache
+verified keys with a short TTL — at the cost of delaying revocation by that TTL,
+which is a decision to make deliberately.
+
+### 4. mTLS gateway→vLLM
+
+Env-var cert/key/CA paths only (no cloud SDK — `tests/test_config.py`
+enforces), passed to `httpx.AsyncClient(cert=..., verify=...)` in
+`UpstreamPool.start()`. Scoped honestly: code, config surface and a
+self-signed-cert test. PRD §4.8 is explicit that the security review runs
+against the real deployment path, so this is not *validated* on a laptop.
+
+### Still open elsewhere
+
+App side: **S3** (`_cache_key` missing `role`), **S6** (Redis unauthenticated
+and published), **S7–S9**, plus **E1–E3** above. Gateway side, from the Phase 1
+audit: PRD §7 Phase 3's `vllm_remote.py` shipped as `openai_http.py` and
+hardcodes `"stream": False` (`openai_http.py:177`), so the app still has no
+streaming path and no TTFT — that is C2's missing plumbing, not just a product
+decision. And the "vendored" Qwen3 tokenizer is still gitignored and untracked
+with no fetch script, so B4's fix does not reproduce from a clean clone.
 
 ---
 

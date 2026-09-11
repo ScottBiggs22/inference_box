@@ -159,11 +159,27 @@ In the order they will land, which is dependency order rather than the order
 
 ## Status
 
-Phase 0 complete. The Phase 1 toolkit is built and Phase 1 waits only on a
-booked GPU. `ruff check . && pytest` is green (**107 tests**), both image
-targets build, and the compose stack has been verified end to end — auth,
-`/readyz`, a streamed completion with a usage frame, and a 400 on a malformed
-request.
+**Phase 0 and Phase 1 complete. The core capacity requirements are met and
+measured on real hardware, not calculated.** On a full-card A10:
+
+| Requirement | Result |
+|---|---|
+| R1 ≥20 output tok/s/user | **50.9 tok/s/user** at 5 concurrent, 8k context — 2.54× |
+| R4 8k context goal | **92,544 tokens** of KV cache — 2.26× headroom for 5×8k |
+| Cold start | 45 s warm / 153 s cold → `startupProbe.failureThreshold` 60 |
+
+PRD §3.3's KV budget was 12% optimistic; its throughput projection was accurate
+within 6%. See `docs/PHASE1_RESULTS.md`, with raw artefacts in
+`results/phase1-vastai-a10/`.
+
+Two caveats that "capacity met" does not cover: **eval quality vs BF16 is
+unmeasured** (it needs the app, which needs the real knowledge corpus, which
+must not reach a rented host — so it runs on the OCI card), and these are
+**rented-box numbers to be re-confirmed** on `VM.GPU.A10.1` before anyone
+multiplies them for procurement.
+
+`ruff check . && pytest` is green (**108 tests**), both image targets build, and
+the compose stack is verified end to end.
 
 **Start here:**
 
@@ -172,6 +188,6 @@ request.
 | `docs/HANDOFF.md` | Current state — read first. What is done, which PRD claims did not survive contact with the code, and the app defects eval calibration turned up. |
 | `docs/INFERENCE_SERVICE_PRD.md` | Design source of truth (rev 3), with in-place corrections. |
 | `docs/VAST_AI_RUNBOOK.md` | Getting this onto a rented A10 for Phase 1 (rev 2). |
-| `docs/PHASE1_RESULTS.md` | Where the measurements go. Pre-cut slots, so the paid session is fill-in-the-blanks. |
+| `docs/PHASE1_RESULTS.md` | The Phase 1 measurements, and the ten corrections they forced into the PRD. |
+| `docs/NEXT_SESSION_PROMPT.md` | Paste-ready prompt for a fresh session. Start here if you are picking this up cold. |
 | `docs/PROBE_CONTRACT.md` | The probe design, extracted for DevOps. |
-| `docs/NEXT_SESSION_PROMPT.md` | Paste-ready prompt for a fresh session in this repo. |
