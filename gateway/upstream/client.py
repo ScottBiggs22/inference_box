@@ -23,15 +23,46 @@ routes.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 import time
 
 import httpx
 
+from gateway import metrics as gw_metrics
 from gateway.config import settings
 from gateway.upstream.breaker import BreakerRegistry, FailureKind
 
 logger = logging.getLogger(__name__)
+
+# BOUND: 1 RETRY, 2 ATTEMPTS TOTAL.
+#
+# A retried request that already reached the GPU has burned one of ~5 decode
+# slots on the card. In a 503 storm, a policy that retries more than once turns
+# 5 users into far more than 10 upstream requests, which is how a retry policy
+# causes the outage it exists to paper over.
+MAX_ATTEMPTS = 2
+
+# Status codes safe to retry. DELIBERATELY NARROWER than "5xx", and a DIFFERENT
+# taxonomy from FailureKind/WEIGHTS in breaker.py -- classify() below folds 500
+# and 503 into the same SERVER_ERROR bucket for TRIP purposes, because both
+# indicate a replica worth the same suspicion. Retrying them is not equally
+# safe: 502/503/504 are what an overloaded, restarting, or wedged-and-timing-out
+# proxy actually returns, and doubling a request against those is the retry's
+# whole reason to exist. 500 more often reflects a genuine error the REQUEST
+# itself triggered -- a shape vLLM rejected -- and retrying that only doubles a
+# guaranteed failure. 429 is included: it is the designed path, since the
+# breaker's WEIGHTS give it weight 0 specifically so a replica asking for less
+# load is retried rather than treated as broken.
+_RETRYABLE_STATUS = frozenset({429, 502, 503, 504})
+
+# Full jitter, capped low: the backoff exists to avoid a correlated retry
+# immediately after a shared 503, not to be a meaningful wait relative to a
+# 10s+ generation. Retry-After is honoured up to the same cap -- an upstream
+# asking for 30s should produce a 503 to the caller, not a 30s hang.
+_MAX_RETRY_DELAY_SEC = 2.0
+_JITTER_BASE_SEC = 0.25
 
 
 class UpstreamError(Exception):
@@ -49,6 +80,23 @@ class AllReplicasOpen(UpstreamError):
     def __init__(self, retry_after: float) -> None:
         super().__init__("all replicas open")
         self.retry_after = retry_after
+
+
+class UpstreamUnreachable(UpstreamError):
+    """Every attempt failed before any response arrived.
+
+    Raised only after MAX_ATTEMPTS is exhausted with nothing but connect-level
+    exceptions -- a read timeout is deliberately excluded from what gets
+    retried (see _should_retry), so a single read timeout reaches here after
+    exactly one attempt, which is correct: the request may still be running on
+    the GPU, and retrying it would double decode load on a replica that is
+    already not answering.
+    """
+
+    def __init__(self, last_exc: Exception, upstream: str) -> None:
+        super().__init__(f"upstream unreachable: {last_exc}")
+        self.last_exc = last_exc
+        self.upstream = upstream
 
 
 def classify(exc: Exception | None, status_code: int | None) -> FailureKind | None:
@@ -72,6 +120,39 @@ def classify(exc: Exception | None, status_code: int | None) -> FailureKind | No
     if status_code >= 400:
         return FailureKind.CLIENT_ERROR
     return None
+
+
+def _should_retry(outcome: httpx.Response | Exception) -> bool:
+    """Is this outcome safe to retry? A DIFFERENT question from classify()'s.
+
+    classify() answers "how much does this count against the breaker"; this
+    answers "did anything reach the GPU, and would sending it again be safe".
+    A read timeout fails both: something may already be running, so it is
+    deliberately excluded even though CONNECT (a cousin failure that reached
+    nothing) is retried.
+    """
+    if isinstance(outcome, Exception):
+        return classify(outcome, None) is FailureKind.CONNECT
+    return outcome.status_code in _RETRYABLE_STATUS
+
+
+def _retry_delay(attempt: int, response: httpx.Response | None) -> float:
+    """Honour Retry-After if the upstream sent one; otherwise full jitter.
+
+    Retry-After is clamped to the same cap as the jitter -- an upstream asking
+    for 30s should produce a 503 to the caller, not a 30s hang.
+    """
+    if response is not None:
+        raw = response.headers.get("retry-after")
+        if raw is not None:
+            try:
+                return min(float(raw), _MAX_RETRY_DELAY_SEC)
+            except ValueError:
+                pass
+    # Backoff jitter, not a security token -- S311 does not apply.
+    return random.uniform(  # noqa: S311
+        0, min(_JITTER_BASE_SEC * (2 ** attempt), _MAX_RETRY_DELAY_SEC)
+    )
 
 
 class UpstreamPool:
@@ -187,6 +268,102 @@ class UpstreamPool:
             breaker.record_success(now)
         else:
             breaker.record_failure(kind, now)
+
+    def _label(self, url: str) -> str:
+        """Replicas are labelled by index, never by URL, in every metric.
+
+        /metrics is unauthenticated, and these are private-subnet vLLM
+        addresses -- the same class of leak that keeps `keyid` out of the
+        request-path labels, topology instead of tenancy.
+        """
+        try:
+            return str(self.urls.index(url))
+        except ValueError:
+            return "unknown"
+
+    async def _send_and_record(
+        self, upstream: str, url: str, body: dict, *, stream: bool,
+    ) -> httpx.Response | Exception:
+        """One attempt against one replica: send, then record into both the
+        breaker and /metrics. Returns the response OR the exception -- never
+        raises -- so the retry loop can inspect either uniformly.
+        """
+        try:
+            if stream:
+                request = self.client.build_request("POST", url, json=body)
+                resp = await self.client.send(request, stream=True)
+            else:
+                resp = await self.client.post(url, json=body)
+        except Exception as e:
+            self.record(upstream, exc=e)
+            gw_metrics.upstream_requests_total.labels(
+                upstream=self._label(upstream), outcome="unreachable").inc()
+            return e
+        self.record(upstream, status_code=resp.status_code)
+        gw_metrics.upstream_requests_total.labels(
+            upstream=self._label(upstream),
+            outcome="ok" if resp.status_code < 400 else "http_error",
+        ).inc()
+        return resp
+
+    async def _with_retry(
+        self, path: str, body: dict, *, stream: bool,
+    ) -> tuple[str, httpx.Response]:
+        """pick() + attempt + bounded retry, in one place.
+
+        The point of owning this here rather than in the route is that a future
+        call site cannot bypass the breaker or the retry bound by hand-rolling
+        its own `pool.client.post(...)`.
+
+        Retrying is safe here specifically because, for the streaming case,
+        `stream=True` gives status and headers WITHOUT reading the body -- so a
+        503 is visible and retryable before a single byte has reached the
+        caller. Once this returns, retrying is no longer possible: the caller
+        owns the response from here on, streamed or not.
+        """
+        exclude: str | None = None
+        outcome: httpx.Response | Exception | None = None
+        upstream = ""
+        for attempt in range(MAX_ATTEMPTS):
+            upstream = self.pick(exclude=exclude)  # AllReplicasOpen propagates
+            url = f"{upstream.rstrip('/')}{path}"
+            outcome = await self._send_and_record(upstream, url, body, stream=stream)
+
+            if not isinstance(outcome, Exception) and outcome.status_code < 400:
+                return upstream, outcome
+            if attempt + 1 >= MAX_ATTEMPTS or not _should_retry(outcome):
+                break
+
+            if stream and not isinstance(outcome, Exception):
+                # This attempt's response is being discarded in favour of a
+                # retry. It was never read; close it explicitly or the
+                # connection never returns to the pool.
+                await outcome.aclose()
+            await asyncio.sleep(
+                _retry_delay(attempt, None if isinstance(outcome, Exception) else outcome)
+            )
+            exclude = upstream
+
+        if isinstance(outcome, Exception):
+            raise UpstreamUnreachable(outcome, upstream)
+        return upstream, outcome
+
+    async def request(self, path: str, *, json: dict) -> tuple[str, httpx.Response]:
+        """POST with pick + bounded retry + breaker/metrics recording owned here.
+
+        Returns (upstream_url, response) -- the caller decides what a >=400
+        status means; only connect-level exhaustion raises (UpstreamUnreachable),
+        and an all-open pool raises AllReplicasOpen from pick().
+        """
+        return await self._with_retry(path, json, stream=False)
+
+    async def open_stream(self, path: str, *, json: dict) -> tuple[str, httpx.Response]:
+        """Like request(), but returns an UNREAD streaming response.
+
+        The caller owns `response.aclose()` from here on -- see the ownership
+        note in routes/chat.py._stream.
+        """
+        return await self._with_retry(path, json, stream=True)
 
     async def health(self) -> dict[str, bool]:
         """Per-replica reachability, for /readyz.

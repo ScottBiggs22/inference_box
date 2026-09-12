@@ -97,6 +97,14 @@ class StubState:
         # exactly that way: the API server is not the engine loop.
         self.fail_mode = "chat"
         self.fail_status = 503
+        # A DIFFERENT shape from fail_after: "fail exactly the first N requests,
+        # then succeed" rather than "fail forever once past N". This is the
+        # gateway's retry logic's fixture -- a retry needs the SAME request to
+        # fail once and then succeed, which a sustained failure can never
+        # exercise without an external, precisely-timed /control call between
+        # attempt 1 and attempt 2 (impractical: the gateway's own retry jitter
+        # is under 2s).
+        self.fail_first_n = 0
         # Admission control, so queue depth is a consequence of concurrency
         # rather than a decoration. Built lazily: a semaphore binds to the loop
         # that first awaits it, and StubState is constructed at import.
@@ -168,14 +176,21 @@ def control(body: Control):
         state.latency = body.latency
     if body.wedge is not None:
         state.wedge = body.wedge
-    return {"ok": True, "fail_after": state.fail_after, "wedge": state.wedge}
+    # `requests` rides along here so a test can assert exactly how many
+    # attempts the gateway actually made -- e.g. confirming a retry bound is
+    # respected, or that a non-retryable status was NOT retried -- without a
+    # dedicated introspection endpoint.
+    return {"ok": True, "fail_after": state.fail_after, "wedge": state.wedge,
+            "requests": state.requests}
 
 
 def _should_fail() -> bool:
     if state.fail_until is not None and time.time() >= state.fail_until:
         state.fail_after = None
         state.fail_until = None
-    return state.fail_after is not None and state.requests > state.fail_after
+    if state.fail_after is not None and state.requests > state.fail_after:
+        return True
+    return state.fail_first_n > 0 and state.requests <= state.fail_first_n
 
 
 @app.get("/health")
@@ -415,6 +430,10 @@ def main() -> None:
                          "engine does. 'all' fails every surface.")
     ap.add_argument("--stub-fail-status", type=int, default=503,
                     help="Status to fail with (503, 429, 500).")
+    ap.add_argument("--stub-fail-first-n", type=int, default=0,
+                    help="Fail exactly the first N chat requests, then succeed "
+                         "-- for testing that a retry recovers, as opposed to "
+                         "--stub-fail-after's sustained failure for the breaker.")
     ap.add_argument("--stub-wedge", action="store_true",
                     help="Accept chat requests, queue them, and never answer -- "
                          "the wedge signature PROBE_CONTRACT.md 4 describes.")
@@ -429,6 +448,7 @@ def main() -> None:
     state.control_enabled = args.stub_control
     state.fail_mode = args.stub_fail_mode
     state.fail_status = args.stub_fail_status
+    state.fail_first_n = args.stub_fail_first_n
     if args.stub_fail_seconds is not None:
         state.fail_until = time.time() + args.stub_fail_seconds
     state.max_concurrent = args.stub_max_concurrent

@@ -18,24 +18,10 @@ from gateway import metrics
 from gateway.audit import AuditRecord, audit_log
 from gateway.auth import Principal, require_principal
 from gateway.config import settings
-from gateway.upstream.client import AllReplicasOpen, pool
+from gateway.upstream.client import AllReplicasOpen, UpstreamUnreachable, pool
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["inference"])
-
-
-def _upstream_label(url: str) -> str:
-    """Replicas are labelled by index, never by URL.
-
-    /metrics is unauthenticated, and the upstream URLs are private-subnet vLLM
-    addresses. Publishing them to an anonymous scraper is the same class of leak
-    that keeps `keyid` out of the labels -- topology instead of tenancy. The
-    index -> URL map is logged once at startup for whoever needs to resolve it.
-    """
-    try:
-        return str(pool.urls.index(url))
-    except ValueError:
-        return "unknown"
 
 
 def _reject(status_code: int, reason: str, principal: Principal,
@@ -145,8 +131,16 @@ async def chat_completions(
         body["max_tokens"] = min(wanted, settings.MAX_COMPLETION_TOKENS)
 
     streaming = bool(body.get("stream"))
+
+    # pick + attempt + bounded retry with jitter on 429/502/503/504, and breaker
+    # recording, are all owned by the pool now -- see UpstreamPool._with_retry.
+    # This is the only place either exception surfaces, for both paths, which is
+    # the point: a future call site cannot bypass the breaker or the retry bound
+    # by hand-rolling its own `pool.client.post(...)`.
     try:
-        upstream = pool.pick()
+        if streaming:
+            return await _stream(body, principal, model, started)
+        upstream, resp = await pool.request("/chat/completions", json=body)
     except AllReplicasOpen as e:
         # 503, not 502. 502 asserts "I reached the upstream and it was broken";
         # 503 says "I am not accepting this right now, try later", which is the
@@ -157,25 +151,9 @@ async def chat_completions(
             principal, model, started,
             headers={"Retry-After": str(max(1, math.ceil(e.retry_after)))},
         ) from e
-    url = f"{upstream.rstrip('/')}/chat/completions"
-
-    if streaming:
-        return await _stream(url, body, principal, model, started, upstream)
-
-    try:
-        resp = await pool.client.post(url, json=body)
-    except Exception as e:
-        pool.record(upstream, exc=e)
-        metrics.upstream_requests_total.labels(
-            upstream=_upstream_label(upstream), outcome="unreachable").inc()
+    except UpstreamUnreachable as e:
         raise _reject(status.HTTP_502_BAD_GATEWAY,
                       "upstream_unreachable", principal, model, started) from e
-
-    pool.record(upstream, status_code=resp.status_code)
-    metrics.upstream_requests_total.labels(
-        upstream=_upstream_label(upstream),
-        outcome="ok" if resp.status_code < 400 else "http_error",
-    ).inc()
 
     try:
         payload = resp.json() if resp.status_code < 400 else {}
@@ -183,8 +161,6 @@ async def chat_completions(
         # A 200 carrying a non-JSON body used to raise here and surface as a 500
         # from the one layer whose entire job is rejecting malformed traffic
         # before it becomes an error.
-        metrics.upstream_requests_total.labels(
-            upstream=_upstream_label(upstream), outcome="bad_response").inc()
         raise _reject(status.HTTP_502_BAD_GATEWAY,
                       "upstream_bad_response", principal, model, started) from e
     usage = payload.get("usage") or {}
@@ -252,8 +228,8 @@ async def _drain_error(resp) -> None:
         await resp.aclose()
 
 
-async def _stream(url: str, body: dict, principal: Principal,
-                  model: str | None, started: float, upstream: str):
+async def _stream(body: dict, principal: Principal,
+                  model: str | None, started: float):
     """Relay SSE frames as they arrive.
 
     THE STATUS IS RESOLVED BEFORE ANY HEADER IS COMMITTED
@@ -264,11 +240,15 @@ async def _stream(url: str, body: dict, principal: Principal,
     body dressed as a stream, and the real status reached only the audit log.
     That also left the circuit breaker with no client-visible status to key on.
 
-    `client.stream()` is just `send(request, stream=True)` with an `aclose()` in a
-    finally, so calling `send()` directly gives the status and headers with the
-    body still unread, and the context-manager problem disappears. Ownership rule:
-    whoever receives a non-error response owns `aclose()`, which is why it sits in
-    the generator's finally beside the audit write.
+    `pool.open_stream()` gives status and headers with the body still unread --
+    which is also what makes retrying a streamed request possible at all: a 503
+    can be retried before a single byte has reached the caller, and the pool
+    does exactly that (bounded, with jitter) before this function ever sees the
+    result. Ownership rule: whoever receives a non-error response owns
+    `aclose()`, which is why it sits in the generator's finally beside the audit
+    write. AllReplicasOpen and UpstreamUnreachable are NOT caught here -- they
+    propagate to chat_completions's single try/except, which handles both paths
+    identically.
 
     Token counts are still not available here: usage is not carried on every
     frame, and assembling the completion to count it would defeat the purpose of
@@ -277,22 +257,7 @@ async def _stream(url: str, body: dict, principal: Principal,
     out of the passthrough is the per-key-budget slice's work;
     bkn301_gateway_requests_missing_usage_total counts the gap meanwhile.
     """
-    client = pool.client
-    try:
-        request = client.build_request("POST", url, json=body)
-        resp = await client.send(request, stream=True)
-    except Exception as e:
-        pool.record(upstream, exc=e)
-        metrics.upstream_requests_total.labels(
-            upstream=_upstream_label(upstream), outcome="unreachable").inc()
-        raise _reject(status.HTTP_502_BAD_GATEWAY,
-                      "upstream_unreachable", principal, model, started) from e
-
-    pool.record(upstream, status_code=resp.status_code)
-    metrics.upstream_requests_total.labels(
-        upstream=_upstream_label(upstream),
-        outcome="ok" if resp.status_code < 400 else "http_error",
-    ).inc()
+    upstream, resp = await pool.open_stream("/chat/completions", json=body)
 
     if resp.status_code >= 400:
         await _drain_error(resp)

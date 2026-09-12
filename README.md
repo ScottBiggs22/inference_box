@@ -166,8 +166,10 @@ first two have landed:
    does not parse the usage frame out of its own passthrough, so every streamed
    request still audits zero tokens. `bkn301_gateway_requests_missing_usage_total`
    counts the gap. That parsing is this slice's work.
-4. **Bounded retries with jitter on 429/503** — the breaker records outcomes but
-   nothing retries yet.
+4. ~~**Bounded retries with jitter on 429/502/503/504**~~ — done. One retry, two
+   attempts total, owned by `UpstreamPool.request()`/`open_stream()` so a future
+   call site cannot bypass it. A read timeout is deliberately never retried:
+   the request may still be running on the GPU.
 5. **mTLS gateway→vLLM.**
 
 ---
@@ -193,7 +195,7 @@ must not reach a rented host — so it runs on the OCI card), and these are
 **rented-box numbers to be re-confirmed** on `VM.GPU.A10.1` before anyone
 multiplies them for procurement.
 
-`ruff check . && pytest` is green (**192 tests**), both image targets build, and
+`ruff check . && pytest` is green (**213 tests**), both image targets build, and
 the compose stack is verified end to end.
 
 **Start here:**

@@ -196,7 +196,7 @@ def live_gateway(live_stub, tmp_path):
 
     procs: list[subprocess.Popen] = []
 
-    def _start(*stub_args: str) -> tuple[str, str]:
+    def _start(*stub_args: str, gateway_env: dict | None = None) -> tuple[str, str]:
         upstream = live_stub(*stub_args)
 
         pepper = "live-gateway-test-pepper"
@@ -225,6 +225,7 @@ def live_gateway(live_stub, tmp_path):
             "UPSTREAM_URLS": f"{upstream}/v1",
             "AUDIT_LOG_PATH": str(tmp_path / "gw-audit.jsonl"),
             "UPSTREAM_METRICS_POLL_SEC": "1.0",
+            **(gateway_env or {}),
         }
         # S603: this interpreter plus literals from the test body.
         proc = subprocess.Popen(  # noqa: S603
