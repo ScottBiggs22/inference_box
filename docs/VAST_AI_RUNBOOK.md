@@ -73,6 +73,13 @@ Roughly $0.20–0.50/hr at current listings — check before booking.
 **Pick the image tag before you book**, and write it down. "latest" is not a
 reproducible benchmark, and vLLM's CLI flags have moved across releases (§4).
 
+> **CLI mechanics — search, create, SSH keys, teardown — live in
+> `docs/VAST_AI_OPERATIONS.md`, not here.** That document is provider
+> mechanics and outlives any one phase; this section stays scoped to what
+> Phase 1 specifically needs from the box. In particular, read its §3 before
+> renting: checking the image's CUDA build against the offer's
+> `cuda_max_good` would have saved a full rebook cycle on 2026-09-10.
+
 > **Check the image's CUDA build against the offer's driver before renting.**
 > `vllm/vllm-openai:v0.28.0` is a **CUDA 13.0** build, so a host whose driver
 > tops out at CUDA 12.x cannot run it — it would fail at boot after you had paid

@@ -203,6 +203,7 @@ the compose stack is verified end to end.
 | `docs/HANDOFF.md` | Current state — read first. What is done, which PRD claims did not survive contact with the code, and the app defects eval calibration turned up. |
 | `docs/INFERENCE_SERVICE_PRD.md` | Design source of truth (rev 3), with in-place corrections. |
 | `docs/VAST_AI_RUNBOOK.md` | Getting this onto a rented A10 for Phase 1 (rev 2). |
+| `docs/VAST_AI_OPERATIONS.md` | vast.ai booking/session/teardown mechanics for agents — traps found the hard way, not phase-specific. |
 | `docs/PHASE1_RESULTS.md` | The Phase 1 measurements, and the ten corrections they forced into the PRD. |
 | `docs/NEXT_SESSION_PROMPT.md` | Paste-ready prompt for a fresh session. Start here if you are picking this up cold. |
 | `docs/PROBE_CONTRACT.md` | The probe design, extracted for DevOps. |
