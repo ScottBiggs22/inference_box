@@ -341,13 +341,124 @@ figure rather than an estimate.
 
 ---
 
+## 5c. Phase 2 session — `/metrics`, breaker, retries. Done, 2026-09-11.
+
+Built on the laptop against the stub, no GPU needed for any of it. Branch
+`phase2-metrics-breaker`, seven commits, **213 tests** (up from 108), `ruff`
+clean, both image targets still build.
+
+### What shipped, in dependency order
+
+1. **argon2id moved off the event loop, and bounded.** `require_principal`
+   was `async def` calling a synchronous ~22-77ms hash inline, which stalls
+   every in-flight SSE relay for that long on every API-key arrival. Dropping
+   `async` moves it to FastAPI's threadpool — but **unbounded, that measured
+   WORSE than doing nothing** (503.9ms loop lag at 40 concurrent verifies vs
+   191.4ms inline at 8), because anyio's default 40-thread limit times
+   argon2's `parallelism=4` oversubscribes the CPU. Bounded to 6
+   (`AUTH_VERIFY_CONCURRENCY`) it drops to 19.7ms with no throughput cost. The
+   bound also closes a real lever: an unbounded threadpool is reachable by
+   unauthenticated traffic, since `_dummy_verify()` runs a full hash on an
+   unknown keyid on purpose (timing-oracle defence).
+2. **`/metrics`, plus a scraper for vLLM's own `/metrics`.** Unauthenticated on
+   the main port per plan; every label folded to a bounded vocabulary (`model`
+   to the allowlist, `reason` to a frozenset, replicas by index not URL) —
+   the same reasoning that already kept `keyid` out, generalised. Three real
+   parser traps closed, each verified against
+   `results/phase1-vastai-a10/vllm-metrics-final.txt`: `prometheus_client`
+   strips `_total` from counter *family* names (the sample keeps it — a
+   family-name lookup silently finds nothing); every counter has a `_created`
+   gauge sibling holding a boot timestamp that never moves (a prefix match
+   reads it as a permanently flat counter); `vllm:iteration_tokens_total` is a
+   histogram despite the suffix. The stub's `/metrics` could not previously
+   produce the wedge signature at all (`state.waiting` was written by
+   nothing) and returned JSON, not Prometheus text — both fixed, plus a new
+   `--stub-wedge` flag that reproduces the signature on demand.
+3. **The streaming-status bug.** A streamed request whose upstream returned
+   503 reached the caller as **HTTP 200** with an error body dressed as a
+   stream — `StreamingResponse` was built before the upstream status was
+   read. Fixed by taking `client.send(request, stream=True)` directly instead
+   of the `client.stream()` context manager, so status and headers are known
+   before any header is committed to the caller. This is also what makes a
+   streamed request retryable at all (see below). Caught a real gap in test
+   coverage doing this: `TestClient`'s ASGI transport **collects** a
+   streaming response before returning it, so no existing test had ever
+   proven a real body streams incrementally through the gateway. New
+   `live_gateway` fixture runs the real process on a real socket.
+4. **Circuit breaker + health-aware routing.** Per-replica state machine,
+   weighted consecutive-failure score (not a rate — at 3-5 concurrent users a
+   rate window has no denominator). 429 carries zero weight on purpose
+   (PROBE_CONTRACT.md §3's mistake, one layer up). **The load-bearing
+   decision:** when every replica is open, `pick()` raises rather than
+   routing anyway — at N=1 that is the common case, and the entire value is
+   converting a 120s hang into an immediate 503 (tested: wall clock under 1s).
+   Reclose needs two good probes AND no live wedge signal, because `/models`
+   alone is a weak probe and the stub already proves it.
+5. **Bounded retries with jitter on 429/502/503/504.** One retry, two
+   attempts — a retry that already reached the GPU burned a decode slot. A
+   read timeout is deliberately **never** retried even though it is a cousin
+   of the retried connect-error, because the request may still be running;
+   this is proven against a genuinely slow stub response (a real
+   `httpx.ReadTimeout`), not simulated. 500 is excluded from the retryable set
+   that 502/503/504 belong to — a distinction the breaker's own `FailureKind`
+   does not carry, since 500 and 503 are the same `SERVER_ERROR` weight for
+   trip purposes but not equally safe to retry.
+
+### What this found that Phase 1's own numbers had already shown, unread
+
+Phase 1 reported the *median* TTFT gateway overhead (+85-130ms) and moved on.
+Re-reading `loadgen_gateway.jsonl` at the **per-request** level: TTFT minimum
+is flat (~175-190ms) across every concurrency level while the maximum scales
+with N (207→899ms at 1→8 concurrent), and the direct-to-vLLM path shows no
+such pattern. That is the signature of something serialising in the gateway,
+not of the network. Correlational, not proven mid-refactor: the distribution
+is bimodal through the gateway rather than an even staircase, so the argon2
+fix's local measurement (§1 above) is the actual confirmation: it targets the
+same mechanism and the effect size matches, but a real-load A/B on the
+gateway itself (see below) is still the decisive test.
+
+### Not done, and why — same two items as Phase 1 left, still true
+
+- **The wedge-detection window (120s) is still an estimate.** The stub can
+  now produce the *signature* — `waiting > 0` while `generation_tokens_total`
+  stays flat, verified via `--stub-wedge` — which validates the detector and
+  the labelled-series parsing end to end. It cannot tell us how long a real
+  engine takes to become unambiguously wedged, or how much natural plateau
+  a REAL vLLM shows under heavy load (the false-positive risk a shorter
+  window would carry). That needs a real engine.
+- **The argon2 fix is unconfirmed under real decode load.** The local
+  measurement (§1) isolates the mechanism cleanly with no GPU competing for
+  CPU; Phase 1's own gateway never authenticated *concurrently with*
+  in-flight decoding (loadgen's workers arrive in a burst, then stream), so
+  the interaction between real GPU-bound decode and this fix has never been
+  measured together.
+
+**Both of the above were explicitly attempted this session and explicitly
+NOT closed: vast.ai had zero A10 offers on 2026-09-11** (checked twice; a
+plain RTX_3090 query worked, ruling out a syntax issue), and zero for A10G,
+L4, or L40 — the entire card class was gone from the marketplace. The one
+same-VRAM substitute, RTX 4090, was quoted at $6.67-$40/hr against Phase 1's
+$0.24/hr A10 rate, and is a different architecture regardless of price
+(Ada Lovelace, no ECC, 450W). **Decision: skip the GPU session rather than
+pay 4090 rates for cards that cannot answer these two questions the way an
+A10 would matter for.** See `docs/VAST_AI_OPERATIONS.md` for the operational
+playbook this used, and the memory file
+`vastai-a10-unavailable-2026-09-11.md` for the finding. Re-check availability
+before the next session assumes Phase 1's pricing still holds.
+
+---
+
 ## 6. What is deliberately not built — and what Phase 1 changed about it
 
 All PRD §7 Phase 2. **Agreed order is dependency order, not the order §7 lists
 them:** `/metrics` → breaker → budgets → mTLS. Each seam already exists, and
 several now have a measurement attached that did not exist before.
 
-### 1. `/metrics` — first, because two other things consume it
+**Items 1 and 2 below are done — see §5c.** Kept here for the historical
+record of what was true at the Phase 1 handoff; do not build against this
+section, `/metrics`, the scraper, the breaker and retries already exist.
+
+### 1. ~~`/metrics`~~ — DONE, §5c
 
 `prometheus-client` is a declared dependency (`pyproject.toml:48`) with no
 endpoint. `METRICS_ENABLED` already exists in `config.py`. Needs
@@ -366,7 +477,7 @@ this can be written against reality rather than against the doc:
 `vllm:prefix_cache_hits_total`, `vllm:prefix_cache_queries_total`,
 `vllm:prompt_tokens_by_source_total{source=local_compute|local_cache_hit}`.
 
-### 2. Circuit breaker + health-aware routing
+### 2. ~~Circuit breaker + health-aware routing~~ — DONE, §5c (retries included)
 
 `UpstreamPool.pick()` (`upstream/client.py:73-81`) is round-robin;
 `health()` (`:83-92`) exists and the router never calls it. `stub/server.py
@@ -375,7 +486,9 @@ this can be written against reality rather than against the doc:
 **Still unmeasured: the wedge-detection window.** Phase 1 never wedged the
 engine naturally, so `PROBE_CONTRACT.md` §4's "120s, not 20s" is still an
 estimate. It belongs here, with the breaker, and inducing a wedge deliberately
-is the way to get it.
+is the way to get it. **Still true after §5c** — the stub can now produce the
+signature, which is not the same as measuring the window on a real engine.
+Blocked on GPU availability, not on remaining gateway work; see §5c.
 
 ### 3. Per-key token budgets + concurrency caps
 
@@ -418,13 +531,22 @@ with no fetch script, so B4's fix does not reproduce from a clean clone.
 
 ## 7. Next actions, in order
 
-**Phase 1 is complete (§5b).** Items 1–5 below are done; the live work is item 6
-— Phase 2 gateway, in dependency order: **`/metrics` → circuit breaker +
-health-aware routing → per-key budgets + concurrency caps → mTLS.** Two Phase 1
-by-products feed straight into it: the wedge-detection window is still
-unmeasured and belongs with the breaker, and `stream_options.include_usage` is
-now confirmed working end to end through the passthrough, which is what the
-per-key token budget needs.
+**Phase 1 is complete (§5b). `/metrics`, the breaker and retries are complete
+(§5c).** The live work is **per-key token budgets + concurrency caps → mTLS.**
+`stream_options.include_usage` is confirmed working end to end through the
+passthrough on the wire, but the gateway still does not parse the usage frame
+out of its own streamed passthrough — `bkn301_gateway_requests_missing_usage_total`
+now makes that gap visible in production rather than silent, and closing it is
+part of the budget work, not separate from it.
+
+**Two measurements remain genuinely open, both blocked on GPU availability
+rather than on more gateway code:** the wedge-detection window (still a
+120s estimate; the stub can produce the signature but not calibrate the
+window against a real engine), and confirming the argon2-threadpool fix (§5c
+item 1) under real concurrent decode load rather than in isolation. vast.ai
+had **zero A10 offers** as of 2026-09-11 — re-check before assuming Phase 1's
+$0.24/hr pricing or availability still holds; see §5c and
+`docs/VAST_AI_OPERATIONS.md`.
 
 <details><summary>Phase 1 items, now closed — kept for the record</summary>
 
