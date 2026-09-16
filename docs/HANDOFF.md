@@ -1,8 +1,40 @@
-# Handoff — state of play as of 2026-09-10 (rev 3)
+# Handoff — state of play as of 2026-09-15 (rev 4)
 
 Written to carry context into a new session working inside this repo. The PRD
 (`docs/INFERENCE_SERVICE_PRD.md`) remains the design source of truth; this
 document is *state*, not design.
+
+---
+
+## 0. Start here — everything in §5d is done but uncommitted
+
+All of §5d's work (budgeting + the GPU session) is finished, verified, and
+written up — but sitting in the working tree on `phase2-metrics-breaker`,
+**not committed**. A new session's first move should be `git status` /
+`git diff --stat HEAD` to see this directly, then either commit it or ask
+before touching anything else. As of this writing:
+
+```
+modified:   docs/HANDOFF.md, docs/PROBE_CONTRACT.md, docs/INFERENCE_SERVICE_PRD.md
+modified:   gateway/auth/__init__.py, gateway/auth/keys.py, gateway/metrics.py,
+            gateway/routes/chat.py, tests/conftest.py
+untracked:  docs/PHASE2_L4_RESULTS.md, gateway/quota.py, tests/test_quota.py,
+            results/phase2-l4-wedge-argon2/
+```
+
+Note `docs/INFERENCE_SERVICE_PRD.md`'s diff is **not mine** — it's the
+pre-existing rev 4 §2.1 KPI edit the user made before this session started;
+leave it as-is when staging, don't attribute it to the budgeting/GPU work.
+
+**226 tests pass, ruff clean** (confirmed at the end of the session that
+produced this diff — re-run `pytest` before committing if picking this up
+fresh, since nothing has been re-verified since).
+
+**The open decision, not yet made:** commit this work, then pick one of —
+(a) the wedge-detection follow-up (§7, a complementary signal that doesn't
+depend on the frozen engine's own counters — recommended, no GPU needed), or
+(b) mTLS gateway→vLLM (§6 item 4, the only remaining PRD §7 Phase 2 item).
+Both are gateway-only, laptop-side work.
 
 ---
 
@@ -17,11 +49,13 @@ Desktop/BKN Code 2/
 └── bkn301-inference/            THIS REPO. Gateway + vLLM deployment.
 ```
 
-`bkn301-inference` has **no remote**. Two local commits. To publish:
-
-```bash
-gh repo create bkn301-inference --private --source=. --push
-```
+~~`bkn301-inference` has **no remote**.~~ **Corrected 2026-09-15: it now does**
+— `origin` is `github.com/ScottBiggs22/inference_box.git`. `origin/main` is two
+commits behind local `main`, and the working branch
+(`phase2-metrics-breaker`) is ten commits ahead of `origin/main` and unpushed.
+Nothing is broken by this — local commits are fine per standing instruction —
+but a session assuming the old "no remote, everything is local-only" framing
+would misread the branch situation. Push explicitly when asked to.
 
 In `baas-poc-templates`, the working remote is **`raghav`**
 (`github.com/raghavsingh15/fd-llm-chatbot`), not `origin`. Its branch is
@@ -417,34 +451,76 @@ fix's local measurement (§1 above) is the actual confirmation: it targets the
 same mechanism and the effect size matches, but a real-load A/B on the
 gateway itself (see below) is still the decisive test.
 
-### Not done, and why — same two items as Phase 1 left, still true
+---
 
-- **The wedge-detection window (120s) is still an estimate.** The stub can
-  now produce the *signature* — `waiting > 0` while `generation_tokens_total`
-  stays flat, verified via `--stub-wedge` — which validates the detector and
-  the labelled-series parsing end to end. It cannot tell us how long a real
-  engine takes to become unambiguously wedged, or how much natural plateau
-  a REAL vLLM shows under heavy load (the false-positive risk a shorter
-  window would carry). That needs a real engine.
-- **The argon2 fix is unconfirmed under real decode load.** The local
-  measurement (§1) isolates the mechanism cleanly with no GPU competing for
-  CPU; Phase 1's own gateway never authenticated *concurrently with*
-  in-flight decoding (loadgen's workers arrive in a burst, then stream), so
-  the interaction between real GPU-bound decode and this fix has never been
-  measured together.
+## 5d. Budgeting shipped, then a GPU session closed both open measurements. 2026-09-14/15.
 
-**Both of the above were explicitly attempted this session and explicitly
-NOT closed: vast.ai had zero A10 offers on 2026-09-11** (checked twice; a
-plain RTX_3090 query worked, ruling out a syntax issue), and zero for A10G,
-L4, or L40 — the entire card class was gone from the marketplace. The one
-same-VRAM substitute, RTX 4090, was quoted at $6.67-$40/hr against Phase 1's
-$0.24/hr A10 rate, and is a different architecture regardless of price
-(Ada Lovelace, no ECC, 450W). **Decision: skip the GPU session rather than
-pay 4090 rates for cards that cannot answer these two questions the way an
-A10 would matter for.** See `docs/VAST_AI_OPERATIONS.md` for the operational
-playbook this used, and the memory file
-`vastai-a10-unavailable-2026-09-11.md` for the finding. Re-check availability
-before the next session assumes Phase 1's pricing still holds.
+Two pieces of work, same session. Per-key token budgets and concurrency caps
+(§6 item 3) were built and reviewed first; then, with that verified, a rented
+GPU session closed the two items §5c left open (the wedge-detection window
+and the argon2 fix under real decode load) — on an L4, not an A10, for
+reasons below.
+
+### Budgeting — done
+
+New `gateway/quota.py`: `check_budget`/`record_usage` (cumulative in-memory
+token budget) and `acquire`/`release` (live in-flight concurrency count),
+wired into `chat.py` as the last gate before forwarding, after every
+rejecting validation so a concurrency slot is never acquired somewhere it
+could leak. `_stream` now parses the trailing `usage` frame out of the SSE
+passthrough and forces `stream_options.include_usage=true` by default (an
+explicit caller `false` is still honoured) — closing the real blocker PRD
+§2.1(e) named: a streamed request's tokens were previously never observed, so
+they could never be charged against a budget. Only API-key principals carry
+`token_budget`/`max_concurrency`; JWT is exempt by design (PRD §5.3).
+
+**213 → 226 tests** (`tests/test_quota.py`), ruff clean. Covers both
+PRD-mandated abuse tests (quota exhaustion, concurrency starvation) plus a
+regression check worth naming: the streamed-request release-ownership logic
+was deliberately sabotaged (slot released right after headers instead of
+after the stream actually finished) and the new streaming test caught it
+before the fix was reverted back in — `TestClient` cannot catch this class of
+bug at all, since it collects a streaming response before returning it.
+
+### GPU session — both remaining open items closed
+
+`docs/PHASE2_L4_RESULTS.md` has the full account. Summary:
+
+- **The argon2 fix holds under real concurrent decode.** 5 concurrent real
+  streamed completions plus three 40-wide authenticated bursts: event-loop
+  lag peaked at **2.42ms** (better than the no-GPU-competition local figure
+  of 19.7ms), zero decode errors across all three bursts. The per-request
+  auth latency under a 40-wide burst (~750-780ms p50) is the bound's queueing
+  working as designed, not a regression.
+- **The wedge-detection window question split into two, and got a real
+  answer on each half.** Heavy legitimate load (KV cache pinned at 99.9%,
+  queue 20+ deep for 40s straight) never produced a flat-counter plateau
+  longer than sub-poll-interval noise — reassuring for the false-positive
+  side of a shorter window. But a real, faithful freeze (`kill -STOP` on
+  `EngineCore` alone, API server left alive — exactly PROBE_CONTRACT.md §4's
+  own description of what a wedge looks like from outside) held for **201
+  seconds with a genuinely pending request, and `vllm:num_requests_waiting`
+  never left 0.** The documented signature's precondition never activates
+  for this failure shape, so **no window length would have caught it** —
+  the metrics-based detector doesn't fire at all; the breaker's
+  `READ_TIMEOUT` weighting (trips at 2, ~240s+) is the actual, slower
+  backstop. Recovery was clean (`kill -CONT`, normal state in 3s, correct
+  token accounting). `PROBE_CONTRACT.md` §4 and §5 are corrected in place.
+  **Not yet built:** a complementary signal that doesn't depend on the
+  frozen engine's own counters — left for the next session.
+
+**Why an L4 and not an A10:** re-checked vast.ai on 2026-09-14. The two live
+A10 offers (Netherlands, $0.24/hr) report `cuda_max_good: 12.8`, below the
+CUDA 13.0 the pinned `vllm/vllm-openai:v0.28.0` image needs — booking either
+reproduces the exact trap `VAST_AI_OPERATIONS.md` §3 documents. The
+known-good Illinois machine (`123534`, CUDA 13.2, same box as Phase 1) is
+still listed but showed `rentable: false` across five checks — not bookable,
+not a CUDA problem. L4 offers were real and available (CUDA 13.2+, ~23GB
+VRAM, $0.32-0.35/hr) — confirmed with the operator before booking that
+neither open question needed A10-specific throughput, only real engine
+mechanism and timing. No capacity/throughput number from this session is
+compared to Phase 1's A10 baseline. Session cost **$0.148**; instance
+destroyed, SSH key removed, volumes confirmed empty.
 
 ---
 
@@ -483,31 +559,42 @@ this can be written against reality rather than against the doc:
 `health()` (`:83-92`) exists and the router never calls it. `stub/server.py
 --stub-fail-after N` exists for exactly this test.
 
-**Still unmeasured: the wedge-detection window.** Phase 1 never wedged the
-engine naturally, so `PROBE_CONTRACT.md` §4's "120s, not 20s" is still an
-estimate. It belongs here, with the breaker, and inducing a wedge deliberately
-is the way to get it. **Still true after §5c** — the stub can now produce the
-signature, which is not the same as measuring the window on a real engine.
-Blocked on GPU availability, not on remaining gateway work; see §5c.
+**The wedge-detection window is measured now, on both axes — see the new
+§5d.** Short version: no false-positive risk found under heavy legitimate
+load, but the documented signature does not fire at all on a real engine
+freeze, at any window length. `PROBE_CONTRACT.md` §4/§5 corrected in place;
+`docs/PHASE2_L4_RESULTS.md` §2 has the full account. **Not blocked on GPU
+work any more — the follow-up (a complementary detection signal) is gateway
+code, next up after budgets.**
 
-### 3. Per-key token budgets + concurrency caps
+### 3. ~~Per-key token budgets + concurrency caps~~ — DONE, §5d
 
-`ApiKeyRecord` already carries `token_budget` and `max_concurrency`
-(`auth/keys.py:77-78`); nothing enforces them. `check_quota` is the named seam.
+`ApiKeyRecord` already carried `token_budget` and `max_concurrency`
+(`auth/keys.py:77-78`); both are now enforced. New `gateway/quota.py`:
+`check_budget`/`record_usage` (cumulative, in-memory) and `acquire`/`release`
+(live in-flight count per key), wired into `chat.py` as the last gate before
+forwarding. `_stream` now parses the trailing `usage` frame out of the SSE
+passthrough — forcing `stream_options.include_usage=true` by default unless
+the caller explicitly said no — which was the real blocker this item's old
+text described: streamed requests could not be charged against a budget
+because their tokens were never observed. `Principal` carries the two new
+fields; only API-key principals are subject to either limit (JWT is the
+trusted service-to-service path, PRD §5.3, and is exempt by design).
 
-**The blocker here is gone.** The audit record used to log zeros for streamed
-requests because usage was unavailable — `stream_options.include_usage` is now
-**confirmed working end to end through the gateway's SSE passthrough**, verified
-against the real vLLM on 2026-09-10. `loadgen.py` already sends it and reads the
-usage frame, including the `choices: []` shape that a naive consumer crashes on.
-So real streamed token counts are wiring, not research.
+**A measured design input, still true:** argon2id verification costs **~77 ms
+per request** (`/healthz` 1.2 ms vs `/v1/models` 77.3 ms). Fine in front of a
+10 s generation; a concurrency cap that checks quota AFTER verifying still
+pays that cost on a rejected request. Not solved this session — deliberately
+placed for a future one, since it is a caching/revocation-latency trade-off
+that deserves its own decision, not a quota-feature side effect.
 
-**A measured design input:** argon2id verification costs **~77 ms per request**
-(`/healthz` 1.2 ms vs `/v1/models` 77.3 ms). That is fine in front of a 10 s
-generation, but it means a concurrency cap implemented as "verify then queue"
-burns 77 ms of CPU per rejected request too. Verify cheaply first, or cache
-verified keys with a short TTL — at the cost of delaying revocation by that TTL,
-which is a decision to make deliberately.
+**213 → 226 tests** (13 new, `tests/test_quota.py`), ruff clean. Coverage
+includes both PRD-mandated abuse tests (quota exhaustion, concurrency
+starvation) and a real regression check: the release-ownership logic for a
+streamed request's concurrency slot was deliberately sabotaged (released
+right after headers instead of after the stream finished) and the streaming
+test caught it before being reverted — this class of bug is invisible to
+`TestClient`, which collects a streaming response before returning it.
 
 ### 4. mTLS gateway→vLLM
 
@@ -531,22 +618,20 @@ with no fetch script, so B4's fix does not reproduce from a clean clone.
 
 ## 7. Next actions, in order
 
-**Phase 1 is complete (§5b). `/metrics`, the breaker and retries are complete
-(§5c).** The live work is **per-key token budgets + concurrency caps → mTLS.**
-`stream_options.include_usage` is confirmed working end to end through the
-passthrough on the wire, but the gateway still does not parse the usage frame
-out of its own streamed passthrough — `bkn301_gateway_requests_missing_usage_total`
-now makes that gap visible in production rather than silent, and closing it is
-part of the budget work, not separate from it.
+**Phase 1 is complete (§5b). `/metrics`, the breaker, retries, per-key
+budgets/concurrency caps, and both measurements that were blocked on GPU
+availability are all complete (§5c, §5d).** The only item left from PRD §7
+Phase 2's list is **mTLS gateway→vLLM**.
 
-**Two measurements remain genuinely open, both blocked on GPU availability
-rather than on more gateway code:** the wedge-detection window (still a
-120s estimate; the stub can produce the signature but not calibrate the
-window against a real engine), and confirming the argon2-threadpool fix (§5c
-item 1) under real concurrent decode load rather than in isolation. vast.ai
-had **zero A10 offers** as of 2026-09-11 — re-check before assuming Phase 1's
-$0.24/hr pricing or availability still holds; see §5c and
-`docs/VAST_AI_OPERATIONS.md`.
+**One follow-up from §5d is real gateway work, not measurement:** a
+complementary wedge-detection signal that does not depend on the frozen
+engine's own counters (§5d found the documented one — `waiting > 0` — never
+fires for a real engine-process freeze, at any window). Candidates already
+named: alert on `bkn301_gateway_inflight_requests` staying elevated with no
+matching completions, or a synthetic probe sent through the same code path a
+real chat request takes. This is a design decision worth making deliberately,
+not a one-line fix — recommend doing it before or alongside mTLS, since it is
+gateway code either way and does not need a GPU.
 
 <details><summary>Phase 1 items, now closed — kept for the record</summary>
 

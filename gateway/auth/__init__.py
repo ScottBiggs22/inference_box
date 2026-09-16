@@ -87,6 +87,12 @@ class Principal:
     scopes: list[str]
     method: str          # "jwt" | "apikey"
     keyid: str | None = None
+    # PRD §5.3 quotas. Always None for a JWT principal -- a per-key budget has
+    # no meaning without a key, and JWT is the trusted service-to-service path
+    # quotas exist to constrain the OTHER credential type against. Enforced in
+    # gateway/quota.py, not read anywhere else.
+    token_budget: int | None = None
+    max_concurrency: int | None = None
 
     def has_scope(self, scope: str) -> bool:
         return scope in self.scopes or "*" in self.scopes
@@ -185,4 +191,6 @@ async def require_principal(
         scopes=record.scopes,
         method="apikey",
         keyid=record.keyid,
+        token_budget=record.token_budget,
+        max_concurrency=record.max_concurrency,
     )

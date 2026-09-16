@@ -2,6 +2,7 @@
 
 **Status:** revised against DevOps response
 **Date:** 2026-09-08 (rev 3 — rebased onto `main` @ `afbf0c5`; findings re-verified §6.2; rented dev box §4.8)
+**Revised:** 2026-09-14 (rev 4 — service KPIs added as §2.1: latency, request size, traffic and prompt-caching guidelines, grounded in the Phase 1 measurements; three defects found in shipped config in the process)
 **Owner:** scott.biggs@bkn301.com
 **Target repo:** new — `bkn301-inference` (this document moves with it)
 **Consuming repo:** `baas-poc-templates` (`services/bkn301-ai-service`, as a new `LLM_BACKEND=vllm` option)
@@ -67,6 +68,274 @@ memory budget. See **§4.4** — it is the most important section in this revisi
 | R8 | Future dynamic allocation via K8s | given | K8s confirmed; constraints handed over in §4.5 |
 | R9 | All development on an M5 MacBook Air | given | Dev box arriving; see §4.7 |
 | R10 | **Portable across OCI and Azure** | *new, §4.4* | Env-var config only, no cloud SDK in the image |
+
+R1–R10 are pass/fail. **§2.1 adds the KPIs they leave out** — responsiveness,
+request shape, arrival rate and cache behaviour — as guidelines rather than
+gates.
+
+---
+
+### 2.1 Service KPIs — latency, size, traffic, caching
+
+R1–R10 are **gates**: a run that misses one is a failed run. Everything in this
+section is a **guideline** — a number to verify fuzzily against, to size alerts
+around in Phase 4, and to notice drifting away from. Nothing here blocks a
+phase. They exist because R1 and R4 between them pin down throughput and context
+and say nothing about *responsiveness*, *request shape*, or *arrival rate*, and
+those are the three things a load test needs in order to be a load test rather
+than a demo.
+
+Every figure below is marked by provenance, because they are not equally solid:
+
+- **MEASURED** — from `PHASE1_RESULTS.md`, on a full-card A10, **on the box**.
+- **OBSERVED** — from the app's own corpus or source. Real, but not a
+  measurement of this service.
+- **DERIVED** — arithmetic on a MEASURED figure. As good as its input.
+- **PROPOSED** — a target we are choosing. Argued, not established.
+
+#### Two workload classes, because they want opposite things
+
+A single KPI table would be wrong. The endpoint serves two workloads with
+different shapes and conflicting objectives, and the second one is the reason
+this section is not just "chat is fast, we're fine".
+
+| | **Class A — interactive chat** | **Class B — document extraction** |
+|---|---|---|
+| Entry points | `/chat`, FAQ, asset chat | `/assets`, `/media` upload |
+| Caller waits? | Yes, watching a stream | No, it is a job with a spinner |
+| Prompt | system + knowledge + live context + short query | one ~2,190-token document chunk |
+| Prompt prefix | **large and byte-identical** across requests | **unique per chunk** |
+| Output cap | 320 tok (`FAQ_MAX_TOKENS`), 300 for field parse | 120–700 tok (`gap_max_tokens`) |
+| Calls per user action | 1 | **up to 15, sequential** |
+| Optimises for | TTFT and ITL | wall-clock completion, throughput |
+| Serialisation | one in flight per replica (`_lock`) | one in flight per replica (`EXTRACTION_LIMITER`) |
+
+> **Class B is the capacity story, and it is not in any table in this document
+> yet.** `intelligent_extractor.py:775` loops up to 15 chunks **sequentially**,
+> each a separate LLM call — and the whole loop runs inside
+> `EXTRACTION_LIMITER = anyio.CapacityLimiter(1)`, applied at the API boundary
+> (`api/assets.py:227`, `api/media.py:150`).
+> DERIVED from the MEASURED decode rates: one extraction is **0.5–2.6 minutes**
+> idle and **0.7–3.5 minutes** at 5 concurrent, and consumes up to **32,850
+> prompt tokens and 10,500 generated tokens**. By GPU occupancy that is **~30
+> full-length (320-token) chat turns** for a single upload. The code says it
+> plainly at `:769-772`: fifteen chunks was "minutes
+> of model time during which no chat request could get through."
+>
+> So the interesting traffic question is not "can we serve 5 chats" — §5 of
+> `PHASE1_RESULTS.md` settled that — it is **what happens when five people upload
+> documents at 10:00 and a sixth asks a question.** With N=5 AI-service replicas
+> (§6.4) the answer today is that the sixth waits `max_wait_sec` (30s) and is
+> served a RAG-only answer with no error. See KPI T6.
+
+#### (a) Latency
+
+TTFT is specified at **two boundaries**, because only one of them is ours and
+only one of them is what a user feels.
+
+**Boundary 1 — gateway.** Request received → first upstream content byte. This
+is what `bkn301_gateway_time_to_first_token_seconds` exports and the only TTFT
+this repo can verify.
+
+| # | KPI | Class | Proposed target | Basis |
+|---|---|---|---|---|
+| L1 | TTFT p50, gateway | A | **≤ 300 ms** | MEASURED **191 ms** @1, **225 ms** @5 |
+| L2 | TTFT p95, gateway | A | **≤ 800 ms** | MEASURED **205 ms** @1, **562 ms** @5, **871 ms** @8 |
+| L3 | TTFT p95, gateway, **cold prefix** | A | **≤ 7 s** (degraded-mode alarm only) | MEASURED **6,450 ms** @5, direct |
+| L4 | Inter-token latency p95 | A | **≤ 40 ms** | DERIVED: 1/50.89 tok/s = **19.7 ms** @5; 1/48.11 = 20.8 ms @8 |
+| L5 | End-to-end generation, 320-tok answer | A | **≤ 8 s** | DERIVED, p50 basis: **6.5 s** @5, **6.9 s** @8 |
+| L6 | Per-extraction wall clock, 15 chunks | B | **≤ 5 min** | DERIVED **2.6 min** idle / **3.5 min** @5, at `gap_max_tokens=700` |
+| L7 | Gateway overhead on TTFT | A+B | **≤ 150 ms** | MEASURED **+85 to +130 ms**, of which argon2id is **~76 ms** |
+
+> **L1/L2 are deliberately loose against the industry numbers, and the reason is
+> the boundary.** The commonly cited targets for interactive chat are TTFT p99
+> ≈ 300 ms and for RAG-augmented chat ≈ 400 ms, with 500 ms as the point most
+> users perceive lag. We beat those at the gateway — but the gateway is not
+> where the user is standing, and setting our own budget at the industry number
+> would spend the entire user-visible budget on the one hop that is already fast.
+
+**Boundary 2 — end user.** Keystroke → first visible character. **Nothing in
+this repo measures it**, and the LLM is a minority of it. The budget below is
+PROPOSED and has to be agreed with the app and platform owners, not asserted
+here.
+
+| Stage | Budget | Provenance |
+|---|---|---|
+| Browser → C# API → AI service | 30 ms | PROPOSED, unmeasured |
+| Retrieval (Chroma) + rerank | **250 ms** | OBSERVED: `RERANK_TIMEOUT_SECONDS = 3.0` with a comment recording "~200–400 ms for 15 candidates on CPU with MiniLM" |
+| AI service → gateway network | **TBD** | **Unknown — see Q10.** All Phase 1 latency was measured *on the box*; there is no tunnel, VPN or region hop in any number above |
+| Gateway auth + validation | 80 ms | MEASURED (argon2id ~76 ms; the JWT path is ~1–2 ms) |
+| vLLM prefill → first token | 130 ms | MEASURED, warm prefix, @5 |
+| **Total** | **~490 ms + network** | |
+
+**Two consequences.** First, the budget is already spent before the GPU is
+reached: retrieval and argon2id together are **~326 ms**, more than double the
+130 ms of actual prefill. Second, the cheapest end-to-end latency win available
+is not on the GPU at all — it is **moving service-to-service traffic to the JWT
+path** (§5.3), which is MEASURED at ~40× cheaper than API-key verification and
+removes ~76 ms from every request.
+
+> **L4 is measurable in principle and not in practice today.** The gateway
+> exports TTFT and whole-request duration, but no per-token metric, so ITL is
+> only available from `loadgen.py`. vLLM exports it directly, and Prometheus is
+> already expected to scrape vLLM (`metrics_scraper.py:16` — "vLLM's own series
+> are not re-exported"). The metric name needs verifying against the pinned
+> build before it goes in a dashboard: current docs give
+> `vllm:inter_token_latency_seconds`, older builds and much of the ecosystem use
+> `vllm:time_per_output_token_seconds`, and vLLM has an open documentation issue
+> about the distinction. This document has already been bitten once by a flag
+> that did not exist in 0.28.0 (§7 Phase 1) — do not put either name in an alert
+> rule without `curl`-ing `/metrics` first.
+
+#### (b) Request size
+
+| # | KPI | Class | Value | Basis |
+|---|---|---|---|---|
+| S1 | Max prompt tokens, server-enforced | A+B | **8,192 − `max_tokens`** | `--max-model-len 8192`; vLLM rejects the sum, not the prompt |
+| S2 | Max prompt tokens, gateway-enforced | A+B | `MAX_PROMPT_TOKENS = 7000` — **but see below** | `gateway/routes/chat.py:52,103` |
+| S3 | Max completion tokens, gateway ceiling | A+B | `MAX_COMPLETION_TOKENS = 2048`, clamped not rejected | `chat.py:121,131` |
+| S4 | Max completion tokens actually requested by the app | A | **320** (`FAQ_MAX_TOKENS`), 300 (field parse), 500 (asset extract) | OBSERVED, `config.py:243` and call sites. **§6.1 B3 still says 160** — that was raised to 320 after B3 was written; B3's argument is unaffected, since a `<think>` block overruns 320 as readily as 160 |
+| S5 | Max completion tokens actually requested | B | **700** (`gap_max_tokens` ceiling) | OBSERVED, `intelligent_extractor.py:738` |
+| S6 | Observed answer length | A | p50 **39**, p95 **131**, max **290** tokens | OBSERVED, 1,620 records, Qwen3 tokenizer. **Mixed provenance** — the corpus predates this service, so it is a blend of real 1.5B answers and RAG-only template text. Read it as "answers on this platform are short", not as a Qwen3-8B output distribution |
+| S7 | Observed query length | A | p50 **11**, p95 **15**, max **41** tokens | OBSERVED, same corpus |
+| S8 | Max body bytes | A+B | `MAX_BODY_BYTES = 1 MiB` | `chat.py:75` |
+
+> **Three defects this exercise found in the numbers we already ship.**
+>
+> **(i) `MAX_PROMPT_TOKENS = 7000` is not 7,000 tokens.** `_estimate_prompt_tokens`
+> is a **word count** — deliberately, and the reasoning at `chat.py:53-63` is
+> sound: a real tokenizer would tie the gateway to one model's vocabulary, and
+> the estimate errs low so it never rejects a legitimate request. What the
+> comment does not say is *how far* low. MEASURED over 3,100 real strings from
+> the app corpus with the Qwen3 tokenizer:
+>
+> | | tokens per word, median | mean | p95 |
+> |---|---|---|---|
+> | English | **1.50** | 1.61 | 2.68 |
+> | **Arabic** | **2.17** | 2.27 | **3.12** |
+>
+> So the 7,000-word guard admits ~**10,500** real tokens of English and
+> ~**15,200** of Arabic at the median, against a hard server limit of 8,192.
+> The guard is therefore doing nothing for any request between 8k and its own
+> ceiling — vLLM's 400 is the real limit, exactly as the comment says it is.
+> That is acceptable **as a design**; it is not acceptable as a *documented
+> KPI*, because "max input 7000" is what a reader will take from the config
+> file. **Fix: rename the setting to `MAX_PROMPT_WORDS`**, or set it to a value
+> that is conservative in real tokens for the worst language (7000 / 3.12 ≈
+> **2,200**, which is too tight) — the rename is the honest option.
+>
+> **(ii) `MAX_PROMPT_TOKENS` + `MAX_COMPLETION_TOKENS` exceeds the context
+> window.** 7,000 + 2,048 = **9,048 > 8,192**. A request that passes both
+> gateway checks can still be rejected by vLLM. The gateway clamps `max_tokens`
+> against a constant rather than against *remaining* context, so it cannot
+> currently make that promise. Low severity today — the app never asks for more
+> than 700 — but it is a promise the gateway's own error taxonomy implies and
+> does not keep.
+>
+> **(iii) The app budgets chunks against 4,096 while the server serves 8,192.**
+> `LLM_CTX_SIZE` defaults to 4096 (`config.py:87`) and `_compute_doc_budget`
+> derives the extraction chunk size from it, giving ~2,190-token chunks. The
+> server is launched with `--max-model-len 8192`. Class B is therefore using
+> **half the window it is paying for**, which roughly doubles the chunk count
+> and hence the wall clock in L6. C5 already says `LLM_CTX_SIZE` becomes
+> advisory under the vllm backend; what it does not say is that leaving it at
+> the local-model value has a measurable cost on the remote one.
+
+#### (c) Traffic
+
+**Sizing input (agreed 2026-09-14):** 50–100 accounts with demo access;
+**simultaneous chats not expected to exceed ~5**; R2's 3–5 concurrent stands as
+the design point and 8 concurrent is already MEASURED as met.
+
+| # | KPI | Class | Value | Basis |
+|---|---|---|---|---|
+| T1 | Design concurrency | A | **5**, headroom verified at **8** | R2; MEASURED |
+| T2 | Sustained RPS ceiling at c=5, 320-tok answers | A | **0.76 req/s** | DERIVED from 242.1 aggregate tok/s |
+| T3 | Sustained RPS ceiling at c=5, observed 40-tok answers | A | **~6.0 req/s** | DERIVED |
+| T4 | Expected mean RPS, busy hour, 100 accounts | A | **~0.11 req/s** | DERIVED: 100 × 20 q/day, 40% of the day inside 2 hours |
+| T5 | **Headroom, demand vs capacity** | A | **~7× at the pessimistic end, ~55× at the realistic one** | DERIVED from T2–T4 |
+| T6 | **Concurrent extractions before chat starves** | B | **N replicas** — today that is **5** | OBSERVED, `EXTRACTION_LIMITER` + §6.4 |
+| T7 | Daily token volume, 100 accounts × 20 queries | A | ~**14 M** prompt / ~**240 k** generated | DERIVED, assuming a 7,000-token prompt and a 120-token answer. **Only ~1.5% of the prompt total is actually computed** — the rest is prefix-cache hits (P1), so ~**210 k** prompt tokens/day reach the GPU |
+| T8 | Aggregate throughput | A+B | 69.7 → 360.5 tok/s across c=1→8 | MEASURED |
+
+> **The user-facing conclusion is that traffic is not the constraint, and the
+> arithmetic supports it.** Expected demand (T4) sits **roughly 7× to 55×**
+> below the measured chat ceiling (T2/T3). There is no scenario in the 50–100
+> account demo where chat RPS is the binding limit, and no reason to build rate
+> limiting for capacity reasons. (Rate limiting is still wanted in §5.3 for
+> *abuse* reasons — one key exhausting the GPU — which is a different argument
+> and survives this one.)
+>
+> **What the arithmetic does not excuse is T6.** Concurrency is capped by
+> replica count, not by user behaviour, so "chats won't exceed 5" does not bound
+> the load — **five simultaneous uploads do, for minutes, and they are one
+> click each.** The mitigation is not more GPU: it is that Class B should not be
+> allowed to consume every replica. Options, cheapest first: cap concurrent
+> extractions below N (leaving at least one replica for chat); give extraction
+> its own replica pool; or add a gateway scope so the extraction key cannot hold
+> more than *k* in-flight requests. **Recommend the third** — it is in the
+> gateway, which is ours, and §5.3 already specifies a per-key concurrency cap
+> as a requirement that nothing has yet implemented.
+
+> **The one traffic number we do *not* have is a real arrival pattern.** The
+> app's `chat_interactions.log` looks like traffic and is not: 1,620 records
+> over 33 days, but **only 134 distinct queries (91.7% repeats)**, a single role
+> (`staff`), and bursts of **63 requests in one second** and 163 in one minute.
+> That is our own eval harness, replayed. It is trustworthy for *shape* (S6, S7
+> above, and the tokens-per-word measurement) and worthless for *rate* — nobody
+> should size a burst budget from it, and T4 above is built from the account
+> count instead.
+
+#### (d) Prompt caching
+
+vLLM's automatic prefix caching is on by default in the V1 engine (§7 Phase 1
+correction) and it is doing the heaviest lifting of any optimisation in the
+stack — including the ones §3 spent pages rejecting.
+
+| # | KPI | Target | Basis |
+|---|---|---|---|
+| P1 | Prefix cache hit rate, prompt tokens | **≥ 70%** | MEASURED **98.5%** on the loadgen shape; 70–90% is the commonly reported band for chatbots with a shared system prompt |
+| P2 | TTFT penalty on a cache miss | tracked, not targeted | MEASURED **15×** (92 ms → 1,405 ms @1) |
+| P3 | Throughput penalty at c=5 with a cold prefix | tracked, not targeted | MEASURED **−43%** (50.9 → 28.9 tok/s/user) |
+| P4 | KV cache utilisation | **< 80%** sustained | `vllm:kv_cache_usage_perc`, already scraped |
+| P5 | Preemptions | **0** sustained | `vllm:num_preemptions_total`, already scraped. Non-zero means the KV budget is being exceeded and requests are being recomputed |
+
+> **P1's target is set at 70% against a 98.5% measurement on purpose.** The
+> 98.5% is real but it was measured on `loadgen.py`'s synthetic shape — a large
+> byte-identical prefix plus a short unique tail — which was *designed* to model
+> FirstData traffic. It is a good model and it is still a model. The gap between
+> 70 and 98.5 is the room for the difference to show up without paging anyone.
+>
+> **P1 is a constraint on prompt construction, not just a number to watch.**
+> Prefix caching matches on a **block-level hash of the token prefix**, so a hit
+> requires the prompt to be byte-identical *from the first token*. Anything
+> variable placed early — a timestamp, a user id, a session id, a re-ordered
+> knowledge block, a locale string — moves the divergence point to the front and
+> costs the whole prefix. The measured penalty for getting this wrong is P2 and
+> P3: TTFT p50 at c=5 goes **132 ms → 3,788 ms**, and a 5-concurrent 512-token
+> request goes from ~10 s end-to-end to **~21.5 s** (DERIVED). That is the
+> difference between a fast answer and one that trips the app's 30 s
+> `max_wait_sec` margin. **Therefore: variable content belongs at the end of the
+> prompt, and any change to prompt assembly order is a performance change that
+> needs P1 re-measured.** Phase 3's C1 sampling-parameter work is the most
+> likely place to break this by accident.
+>
+> **R1 survives a total cache failure** — 28.9 tok/s/user at c=5 is still above
+> the 20 tok/s floor — so this is a latency and cost KPI, not an availability
+> risk. That robustness result is `PHASE1_RESULTS.md` §5's, and it is the reason
+> P1 is a guideline rather than a gate.
+
+#### (e) What cannot be measured today
+
+Four of the KPIs above have no production signal behind them. Listing them is
+cheaper than discovering it in Phase 4 while writing an alert rule.
+
+| Gap | Effect | Fix |
+|---|---|---|
+| **Streamed requests carry no `usage`** | `bkn301_gateway_tokens_total` sees roughly **a tenth of reality** — in Phase 1, 70 of 78 requests were streamed. T7 and any per-key token budget (§5.3) are unmeasurable until this is fixed | Parse `stream_options.include_usage` out of the SSE frames. `requests_missing_usage_total` already makes the gap visible |
+| **No ITL/TPOT metric in the gateway** | L4 is loadgen-only | Scrape vLLM directly for it, after verifying the metric name against the pinned build |
+| **No per-key concurrency or quota enforcement** | T6's recommended mitigation does not exist; `check_quota` in `gateway/auth/keys.py` is a seam, not an implementation | Phase 2 |
+| **No end-to-end latency measurement anywhere** | Boundary 2 is entirely PROPOSED | Needs a trace id propagated from the C# API. Phase 4 |
 
 ---
 
@@ -949,6 +1218,13 @@ the stub, then pointed at the dev GPU.
       router interface lands here).
 - [ ] mTLS gateway→vLLM.
 - [ ] Measure prefix-cache hit rate to inform the §3.6 LMCache decision.
+      **Done in Phase 1** (98.5%, `PHASE1_RESULTS.md` §5); what remains is
+      §2.1 P1 — re-measuring it against *real* prompt assembly rather than
+      loadgen's synthetic shape, and the per-key concurrency cap T6 needs.
+- [ ] Parse `stream_options.include_usage` from the SSE frames so streamed
+      requests report token usage (§2.1(e)). Until this lands, the per-key token
+      budget above cannot be enforced and `tokens_total` reads about a tenth of
+      reality.
 
 **Exit gate:** security review of the gateway; abuse tests (quota exhaustion,
 oversized prompt, revoked key, expired JWT, concurrency starvation) all pass.
@@ -1003,7 +1279,10 @@ oversized prompt, revoked key, expired JWT, concurrency starvation) all pass.
 - [ ] **S6–S9:** Redis auth + TLS + unpublished port; non-root multi-stage
       image; rate limits and request-size caps; production CORS.
 - [ ] Observability: Prometheus scrape of vLLM + gateway, alerts on tok/s/user
-      below target, TTFT p95, KV cache utilisation, breaker trips.
+      below target, TTFT p95, KV cache utilisation, breaker trips. **Thresholds
+      come from §2.1** — L1/L2 for TTFT, P1 for cache hit rate, P4/P5 for KV
+      pressure. Close §2.1(e)'s four measurement gaps first, or four of these
+      alerts have no series behind them.
 - [ ] Runbook: replica wedge, OOM, model rollback, key compromise.
 
 **Exit gate:** load test at 5 concurrent sustained for 1 hour; failover drill
@@ -1068,6 +1347,27 @@ landing in any particular form.
 9. Retention policy for gateway audit logs — `CONVERSATION_TTL_SECONDS` is 30
    days; should the audit trail match, or does compliance require longer?
 
+10. **What is the network path from the AI service to the gateway?** *(Needs
+    DevOps, but ours to ask.)* Every latency figure in this document was
+    measured **on the GPU box** — no tunnel, no VPN, no region hop. §2.1's
+    end-to-end budget has a `TBD` line for it, and it is the single largest
+    unknown in that budget: same-VCN adds ~1–5 ms and changes nothing, a
+    Cloudflare Tunnel or a cross-region hop adds tens to hundreds of ms and
+    would dominate everything else in the table. Until this is answered, the
+    gateway-boundary KPIs (L1, L2) are the only ones anyone should quote.
+11. **Who owns the end-to-end latency budget?** §2.1 boundary 2 crosses the C#
+    API, the AI service's retrieval and rerank stages, and this endpoint. The
+    two largest line items in it — ~250 ms of rerank and ~76 ms of argon2id —
+    are both **outside the GPU**, so a budget nobody owns jointly will be met by
+    each party individually and missed overall.
+12. **Should extraction be capped so it cannot starve chat?** §2.1 T6: five
+    simultaneous document uploads occupy all five AI-service replicas for
+    minutes, and the sixth user's chat request silently degrades to RAG-only.
+    Recommended fix is a per-key concurrency cap in the gateway (§5.3, currently
+    specified and unimplemented), which is cheaper than the alternatives and
+    lives in code we own. Needs a product decision on what *k* is, and on
+    whether a queued upload or a starved chat is the better failure.
+
 ---
 
 ## 9. Sources
@@ -1082,3 +1382,9 @@ landing in any particular form.
 - [OCI Compute shapes](https://docs.oracle.com/en-us/iaas/Content/Compute/References/computeshapes.htm) · [OCI A10 GPU shapes announcement](https://blogs.oracle.com/cloud-infrastructure/announcing-nvidia-a10-gpu) — the §4.3 shape specifications
 - [Azure NVadsA10_v5 size series](https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/gpu-accelerated/nvadsa10v5-series) · [Azure NVads A10 v5 GA announcement](https://azure.microsoft.com/en-us/blog/choose-the-right-size-for-your-workload-with-nvads-a10-v5-virtual-machines-now-generally-available/) — the §4.4 partitioning risk (1/6 card, 4 GiB frame buffer, upward)
 - DevOps response, 2026-09-04 — the answers folded into §4.1
+- [vLLM production metrics reference](https://docs.vllm.ai/en/stable/design/metrics/) · [vLLM issue #55276 — ITL vs TPOT metric naming](https://github.com/vllm-project/vllm/issues/55276) — the §2.1(a) caveat on which metric name the pinned build exports
+- [Spheron: LLM inference SLO engineering — TTFT, ITL and P99 latency budgets (2026)](https://www.spheron.network/blog/llm-inference-slo-ttft-itl-latency-budget-guide-2026/) — the 300 ms interactive / 400 ms RAG TTFT p99 reference points in §2.1(a). Vendor material; treated as a reference band, not an authority
+- [TianPan: time-to-first-token is the latency SLO you aren't instrumenting](https://tianpan.co/blog/2026/04/23/ttft-latency-slo-streaming-reasoning-models) — the p95 < 500 ms interactive figure, independent of the above
+- [GIGAGPU: vLLM prefix caching deep dive](https://gigagpu.com/vllm-prefix-caching-deep-dive/) · [llm-academy: prefix caching block hashing vs radix tree](https://llm-academy.dev/optimization/prefix-caching/) — block-level prefix hashing, and the 70–90% hit-rate band behind KPI P1
+- `docs/PHASE1_RESULTS.md` §5 — every figure in §2.1 marked MEASURED
+- `baas-poc-templates` `logs/chat_interactions.log` (1,620 records) — every figure marked OBSERVED, with the provenance warning in §2.1(c)

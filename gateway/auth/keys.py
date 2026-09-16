@@ -24,11 +24,14 @@ The pepper is applied on top of argon2's own per-key salt and is held in the
 environment, not in the store -- so a stolen key file is not by itself enough to
 mount an offline dictionary attack.
 
-WHAT IS DELIBERATELY NOT HERE YET
-=================================
-Per-key token budgets and concurrency caps (PRD §5.3) are Phase 2. The record
-carries the fields so the store format does not have to change when they land,
-and `check_quota` is the seam they plug into.
+TOKEN BUDGETS AND CONCURRENCY CAPS
+==================================
+Enforced in `gateway/quota.py`, not here. This module owns who a key IS
+(identity, scopes, expiry, revocation); `quota.py` owns what a verified key is
+currently ALLOWED to do (PRD §5.3). `mint_key`'s `token_budget` and
+`max_concurrency` arguments just populate the fields the record has always
+carried -- enforcement reads them off the `Principal` gateway/auth/__init__.py
+builds, not off the store directly.
 """
 from __future__ import annotations
 
@@ -116,11 +119,18 @@ def split_key(presented: str) -> tuple[str, str]:
 
 
 def mint_key(*, live: bool = True, scopes: list[str] | None = None,
-             ttl_sec: float | None = None, label: str = "") -> tuple[str, ApiKeyRecord]:
+             ttl_sec: float | None = None, label: str = "",
+             token_budget: int | None = None,
+             max_concurrency: int | None = None) -> tuple[str, ApiKeyRecord]:
     """Create a new key. Returns (plaintext, record).
 
     The plaintext is returned exactly once and is never recoverable afterwards,
     which is the whole point of storing only the hash.
+
+    `token_budget` and `max_concurrency` are unset (unlimited) by default --
+    the demo's ~50-100 accounts are far below any capacity constraint (PRD
+    §2.1 T5), so a cap only needs to exist on the keys it is actually meant
+    for, e.g. an extraction-only key per PRD §2.1 T6.
     """
     keyid = secrets.token_hex(6)
     secret = secrets.token_urlsafe(32)
@@ -132,6 +142,8 @@ def mint_key(*, live: bool = True, scopes: list[str] | None = None,
         scopes=scopes or ["chat"],
         expires_at=(time.time() + ttl_sec) if ttl_sec else None,
         label=label,
+        token_budget=token_budget,
+        max_concurrency=max_concurrency,
     )
     return plaintext, record
 

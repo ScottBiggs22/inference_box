@@ -1,0 +1,690 @@
+{
+  "config": {
+    "base": "http://127.0.0.1:8080",
+    "vllm_metrics_url": "http://127.0.0.1:8000/metrics",
+    "key": "<redacted-throwaway-key>",
+    "model": "Qwen/Qwen3-8B-AWQ",
+    "overload_workers": 30,
+    "duration": 40.0,
+    "output": "/root/wedge_natural_plateau2.json"
+  },
+  "n_requests_completed": 30,
+  "n_errors": 0,
+  "n_5xx": 0,
+  "raw_samples": [
+    {
+      "vllm:num_requests_running": 0.0,
+      "vllm:num_requests_waiting": 0.0,
+      "vllm:kv_cache_usage_perc": 0.0,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34556.0,
+      "_t": 616821.296325672
+    },
+    {
+      "vllm:num_requests_running": 0.0,
+      "vllm:num_requests_waiting": 0.0,
+      "vllm:kv_cache_usage_perc": 0.0,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34556.0,
+      "_t": 616821.821320748
+    },
+    {
+      "vllm:num_requests_running": 2.0,
+      "vllm:num_requests_waiting": 2.0,
+      "vllm:kv_cache_usage_perc": 0.04448675783278522,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34556.0,
+      "_t": 616822.33692223
+    },
+    {
+      "vllm:num_requests_running": 2.0,
+      "vllm:num_requests_waiting": 18.0,
+      "vllm:kv_cache_usage_perc": 0.06664358663666259,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34557.0,
+      "_t": 616822.85014781
+    },
+    {
+      "vllm:num_requests_running": 3.0,
+      "vllm:num_requests_waiting": 27.0,
+      "vllm:kv_cache_usage_perc": 0.08897351566557032,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34558.0,
+      "_t": 616823.364098382
+    },
+    {
+      "vllm:num_requests_running": 3.0,
+      "vllm:num_requests_waiting": 27.0,
+      "vllm:kv_cache_usage_perc": 0.08897351566557032,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34558.0,
+      "_t": 616823.878436861
+    },
+    {
+      "vllm:num_requests_running": 3.0,
+      "vllm:num_requests_waiting": 27.0,
+      "vllm:kv_cache_usage_perc": 0.1111303444694478,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34560.0,
+      "_t": 616824.392364285
+    },
+    {
+      "vllm:num_requests_running": 4.0,
+      "vllm:num_requests_waiting": 26.0,
+      "vllm:kv_cache_usage_perc": 0.1332871732733253,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34562.0,
+      "_t": 616824.906273521
+    },
+    {
+      "vllm:num_requests_running": 5.0,
+      "vllm:num_requests_waiting": 25.0,
+      "vllm:kv_cache_usage_perc": 0.15561710230223302,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34565.0,
+      "_t": 616825.420543423
+    },
+    {
+      "vllm:num_requests_running": 5.0,
+      "vllm:num_requests_waiting": 25.0,
+      "vllm:kv_cache_usage_perc": 0.17760083088108014,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34569.0,
+      "_t": 616825.934818467
+    },
+    {
+      "vllm:num_requests_running": 6.0,
+      "vllm:num_requests_waiting": 24.0,
+      "vllm:kv_cache_usage_perc": 0.19993075990998788,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34573.0,
+      "_t": 616826.449095791
+    },
+    {
+      "vllm:num_requests_running": 6.0,
+      "vllm:num_requests_waiting": 24.0,
+      "vllm:kv_cache_usage_perc": 0.19993075990998788,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34573.0,
+      "_t": 616826.963086829
+    },
+    {
+      "vllm:num_requests_running": 6.0,
+      "vllm:num_requests_waiting": 24.0,
+      "vllm:kv_cache_usage_perc": 0.22208758871386536,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34578.0,
+      "_t": 616827.477394944
+    },
+    {
+      "vllm:num_requests_running": 7.0,
+      "vllm:num_requests_waiting": 23.0,
+      "vllm:kv_cache_usage_perc": 0.24424441751774273,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34583.0,
+      "_t": 616827.99174978
+    },
+    {
+      "vllm:num_requests_running": 7.0,
+      "vllm:num_requests_waiting": 23.0,
+      "vllm:kv_cache_usage_perc": 0.26622814609658996,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34589.0,
+      "_t": 616828.505660732
+    },
+    {
+      "vllm:num_requests_running": 7.0,
+      "vllm:num_requests_waiting": 23.0,
+      "vllm:kv_cache_usage_perc": 0.26622814609658996,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34589.0,
+      "_t": 616829.019903671
+    },
+    {
+      "vllm:num_requests_running": 8.0,
+      "vllm:num_requests_waiting": 22.0,
+      "vllm:kv_cache_usage_perc": 0.28873117535052795,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34595.0,
+      "_t": 616829.533706176
+    },
+    {
+      "vllm:num_requests_running": 9.0,
+      "vllm:num_requests_waiting": 21.0,
+      "vllm:kv_cache_usage_perc": 0.31088800415440543,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34602.0,
+      "_t": 616830.048208793
+    },
+    {
+      "vllm:num_requests_running": 9.0,
+      "vllm:num_requests_waiting": 21.0,
+      "vllm:kv_cache_usage_perc": 0.33287173273325255,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34610.0,
+      "_t": 616830.562776101
+    },
+    {
+      "vllm:num_requests_running": 10.0,
+      "vllm:num_requests_waiting": 20.0,
+      "vllm:kv_cache_usage_perc": 0.3552016617621603,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34618.0,
+      "_t": 616831.077141833
+    },
+    {
+      "vllm:num_requests_running": 10.0,
+      "vllm:num_requests_waiting": 20.0,
+      "vllm:kv_cache_usage_perc": 0.3552016617621603,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34618.0,
+      "_t": 616831.591399326
+    },
+    {
+      "vllm:num_requests_running": 10.0,
+      "vllm:num_requests_waiting": 20.0,
+      "vllm:kv_cache_usage_perc": 0.37735849056603776,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34627.0,
+      "_t": 616832.104973568
+    },
+    {
+      "vllm:num_requests_running": 11.0,
+      "vllm:num_requests_waiting": 19.0,
+      "vllm:kv_cache_usage_perc": 0.3996884195949455,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34636.0,
+      "_t": 616832.619368921
+    },
+    {
+      "vllm:num_requests_running": 12.0,
+      "vllm:num_requests_waiting": 18.0,
+      "vllm:kv_cache_usage_perc": 0.42184524839882287,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34646.0,
+      "_t": 616833.133660097
+    },
+    {
+      "vllm:num_requests_running": 12.0,
+      "vllm:num_requests_waiting": 18.0,
+      "vllm:kv_cache_usage_perc": 0.4441751774277306,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34657.0,
+      "_t": 616833.648160391
+    },
+    {
+      "vllm:num_requests_running": 12.0,
+      "vllm:num_requests_waiting": 18.0,
+      "vllm:kv_cache_usage_perc": 0.4441751774277306,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34657.0,
+      "_t": 616834.16947951
+    },
+    {
+      "vllm:num_requests_running": 13.0,
+      "vllm:num_requests_waiting": 17.0,
+      "vllm:kv_cache_usage_perc": 0.4663320062316081,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34668.0,
+      "_t": 616834.684422251
+    },
+    {
+      "vllm:num_requests_running": 13.0,
+      "vllm:num_requests_waiting": 17.0,
+      "vllm:kv_cache_usage_perc": 0.48848883503548557,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34680.0,
+      "_t": 616835.1987124
+    },
+    {
+      "vllm:num_requests_running": 14.0,
+      "vllm:num_requests_waiting": 16.0,
+      "vllm:kv_cache_usage_perc": 0.510645663839363,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34692.0,
+      "_t": 616835.713122369
+    },
+    {
+      "vllm:num_requests_running": 14.0,
+      "vllm:num_requests_waiting": 16.0,
+      "vllm:kv_cache_usage_perc": 0.510645663839363,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34692.0,
+      "_t": 616836.227399829
+    },
+    {
+      "vllm:num_requests_running": 14.0,
+      "vllm:num_requests_waiting": 16.0,
+      "vllm:kv_cache_usage_perc": 0.5328024926432404,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34705.0,
+      "_t": 616836.741751091
+    },
+    {
+      "vllm:num_requests_running": 15.0,
+      "vllm:num_requests_waiting": 15.0,
+      "vllm:kv_cache_usage_perc": 0.5551324216721482,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34718.0,
+      "_t": 616837.256121023
+    },
+    {
+      "vllm:num_requests_running": 16.0,
+      "vllm:num_requests_waiting": 14.0,
+      "vllm:kv_cache_usage_perc": 0.5772892504760256,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34732.0,
+      "_t": 616837.770238397
+    },
+    {
+      "vllm:num_requests_running": 16.0,
+      "vllm:num_requests_waiting": 14.0,
+      "vllm:kv_cache_usage_perc": 0.5772892504760256,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34732.0,
+      "_t": 616838.284299634
+    },
+    {
+      "vllm:num_requests_running": 16.0,
+      "vllm:num_requests_waiting": 14.0,
+      "vllm:kv_cache_usage_perc": 0.5996191795049334,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34747.0,
+      "_t": 616838.797826197
+    },
+    {
+      "vllm:num_requests_running": 17.0,
+      "vllm:num_requests_waiting": 13.0,
+      "vllm:kv_cache_usage_perc": 0.6216029080837805,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34762.0,
+      "_t": 616839.311918985
+    },
+    {
+      "vllm:num_requests_running": 17.0,
+      "vllm:num_requests_waiting": 13.0,
+      "vllm:kv_cache_usage_perc": 0.643759736887658,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34778.0,
+      "_t": 616839.826184723
+    },
+    {
+      "vllm:num_requests_running": 17.0,
+      "vllm:num_requests_waiting": 13.0,
+      "vllm:kv_cache_usage_perc": 0.643759736887658,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34778.0,
+      "_t": 616840.340284423
+    },
+    {
+      "vllm:num_requests_running": 18.0,
+      "vllm:num_requests_waiting": 12.0,
+      "vllm:kv_cache_usage_perc": 0.666262766141596,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34794.0,
+      "_t": 616840.854085926
+    },
+    {
+      "vllm:num_requests_running": 18.0,
+      "vllm:num_requests_waiting": 12.0,
+      "vllm:kv_cache_usage_perc": 0.6882464947204432,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34811.0,
+      "_t": 616841.368169986
+    },
+    {
+      "vllm:num_requests_running": 19.0,
+      "vllm:num_requests_waiting": 11.0,
+      "vllm:kv_cache_usage_perc": 0.7104033235243206,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34828.0,
+      "_t": 616841.882358128
+    },
+    {
+      "vllm:num_requests_running": 19.0,
+      "vllm:num_requests_waiting": 11.0,
+      "vllm:kv_cache_usage_perc": 0.7104033235243206,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34828.0,
+      "_t": 616842.396412323
+    },
+    {
+      "vllm:num_requests_running": 20.0,
+      "vllm:num_requests_waiting": 10.0,
+      "vllm:kv_cache_usage_perc": 0.732560152328198,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34846.0,
+      "_t": 616842.9103175
+    },
+    {
+      "vllm:num_requests_running": 20.0,
+      "vllm:num_requests_waiting": 10.0,
+      "vllm:kv_cache_usage_perc": 0.7548900813571058,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34865.0,
+      "_t": 616843.433411135
+    },
+    {
+      "vllm:num_requests_running": 21.0,
+      "vllm:num_requests_waiting": 9.0,
+      "vllm:kv_cache_usage_perc": 0.7772200103860135,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34884.0,
+      "_t": 616843.947664099
+    },
+    {
+      "vllm:num_requests_running": 21.0,
+      "vllm:num_requests_waiting": 9.0,
+      "vllm:kv_cache_usage_perc": 0.7772200103860135,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34884.0,
+      "_t": 616844.46227966
+    },
+    {
+      "vllm:num_requests_running": 21.0,
+      "vllm:num_requests_waiting": 9.0,
+      "vllm:kv_cache_usage_perc": 0.799376839189891,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34904.0,
+      "_t": 616844.976937751
+    },
+    {
+      "vllm:num_requests_running": 22.0,
+      "vllm:num_requests_waiting": 8.0,
+      "vllm:kv_cache_usage_perc": 0.8217067682187986,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34924.0,
+      "_t": 616845.491358175
+    },
+    {
+      "vllm:num_requests_running": 22.0,
+      "vllm:num_requests_waiting": 8.0,
+      "vllm:kv_cache_usage_perc": 0.8217067682187986,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34924.0,
+      "_t": 616846.005471174
+    },
+    {
+      "vllm:num_requests_running": 22.0,
+      "vllm:num_requests_waiting": 8.0,
+      "vllm:kv_cache_usage_perc": 0.8436904967976459,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34945.0,
+      "_t": 616846.519200449
+    },
+    {
+      "vllm:num_requests_running": 23.0,
+      "vllm:num_requests_waiting": 7.0,
+      "vllm:kv_cache_usage_perc": 0.8658473256015233,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34966.0,
+      "_t": 616847.033561666
+    },
+    {
+      "vllm:num_requests_running": 23.0,
+      "vllm:num_requests_waiting": 7.0,
+      "vllm:kv_cache_usage_perc": 0.8658473256015233,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34966.0,
+      "_t": 616847.54851794
+    },
+    {
+      "vllm:num_requests_running": 24.0,
+      "vllm:num_requests_waiting": 6.0,
+      "vllm:kv_cache_usage_perc": 0.8881772546304311,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 34988.0,
+      "_t": 616848.062104668
+    },
+    {
+      "vllm:num_requests_running": 24.0,
+      "vllm:num_requests_waiting": 6.0,
+      "vllm:kv_cache_usage_perc": 0.9103340834343084,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 35011.0,
+      "_t": 616848.576096093
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9324909122381859,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 35034.0,
+      "_t": 616849.090513963
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9324909122381859,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 35034.0,
+      "_t": 616849.604776017
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9548208412670937,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 35058.0,
+      "_t": 616850.118496227
+    },
+    {
+      "vllm:num_requests_running": 26.0,
+      "vllm:num_requests_waiting": 4.0,
+      "vllm:kv_cache_usage_perc": 0.9769776700709711,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 35082.0,
+      "_t": 616850.63286269
+    },
+    {
+      "vllm:num_requests_running": 26.0,
+      "vllm:num_requests_waiting": 4.0,
+      "vllm:kv_cache_usage_perc": 0.9769776700709711,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 35082.0,
+      "_t": 616851.147064685
+    },
+    {
+      "vllm:num_requests_running": 26.0,
+      "vllm:num_requests_waiting": 4.0,
+      "vllm:kv_cache_usage_perc": 0.9989613986498183,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 35107.0,
+      "_t": 616851.660946806
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9626103513934569,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 35182.0,
+      "_t": 616852.174931636
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.96451445386879,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 35332.0,
+      "_t": 616852.690117905
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9660723558940627,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 35507.0,
+      "_t": 616853.205927418
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9683226588194564,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 35682.0,
+      "_t": 616853.719965701
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9700536610697594,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 35857.0,
+      "_t": 616854.234510379
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9719577635450926,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 36032.0,
+      "_t": 616854.748209717
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9738618660204258,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 36207.0,
+      "_t": 616855.262115933
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9752466678206682,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 36357.0,
+      "_t": 616855.775934352
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.977496970746062,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 36532.0,
+      "_t": 616856.289967319
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9790548727713346,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 36707.0,
+      "_t": 616856.805103416
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9813051756967284,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 36882.0,
+      "_t": 616857.319076515
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9830361779470314,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 37057.0,
+      "_t": 616857.832846037
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.984594079972304,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 37207.0,
+      "_t": 616858.346695589
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9864981824476372,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 37382.0,
+      "_t": 616858.860892957
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9882291846979401,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 37557.0,
+      "_t": 616859.375318955
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9904794876233339,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 37732.0,
+      "_t": 616859.889513886
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9918642894235763,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 37882.0,
+      "_t": 616860.403903405
+    },
+    {
+      "vllm:num_requests_running": 25.0,
+      "vllm:num_requests_waiting": 5.0,
+      "vllm:kv_cache_usage_perc": 0.9939414921239398,
+      "vllm:num_preemptions_total": 0.0,
+      "vllm:generation_tokens_total": 38057.0,
+      "_t": 616860.917556984
+    }
+  ],
+  "analysis": {
+    "longest_flat_while_waiting_seconds": 0.0,
+    "flat_while_waiting_episodes": [
+      {
+        "streak_seconds": 0.5132255799835548
+      },
+      {
+        "streak_seconds": 0.5139274239772931
+      },
+      {
+        "streak_seconds": 0.5143081150017679
+      },
+      {
+        "streak_seconds": 0.513802504981868
+      },
+      {
+        "streak_seconds": 0.5135742420097813
+      },
+      {
+        "streak_seconds": 0.5149427409050986
+      },
+      {
+        "streak_seconds": 0.5143512620124966
+      },
+      {
+        "streak_seconds": 0.5135265629505739
+      },
+      {
+        "streak_seconds": 0.513801502995193
+      },
+      {
+        "streak_seconds": 0.513905177009292
+      },
+      {
+        "streak_seconds": 0.5146580910077319
+      },
+      {
+        "streak_seconds": 0.5137292749714106
+      },
+      {
+        "streak_seconds": 0.5135867280187085
+      },
+      {
+        "streak_seconds": 0.5137202099431306
+      },
+      {
+        "streak_seconds": 0.5138821209548041
+      }
+    ]
+  }
+}

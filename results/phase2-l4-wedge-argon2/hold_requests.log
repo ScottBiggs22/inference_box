@@ -1,0 +1,3 @@
+worker 1: status=200 bytes=207164 elapsed=19.9s
+worker 0: status=200 bytes=207090 elapsed=20.0s
+worker 2: status=200 bytes=206977 elapsed=20.0s

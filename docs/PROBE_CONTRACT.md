@@ -79,9 +79,10 @@ Relevant series from vLLM's `/metrics`:
 
 Two mechanisms, with different roles — we recommend both:
 
-1. **Gateway circuit breaker (primary).** The gateway sees the stall first, stops
-   routing to that replica, and alerts. No restart, no dropped work, human in the
-   loop.
+1. **Gateway circuit breaker (primary).** ~~The gateway sees the stall
+   first~~ — see the correction below; this is true for a *read-timeout*
+   stall, not for the specific freeze shape measured on 2026-09-15. No
+   restart, no dropped work, human in the loop.
 2. **Sidecar backstop (automated).** Scrapes `/metrics` and fails `/healthz` if
    the signature holds for a **conservative** window — 120s, not 20s. This is
    what finally trips the `livenessProbe`.
@@ -90,6 +91,46 @@ The weighting is deliberate: **an automatic restart on a false positive is worse
 than a late alert**, because it costs a minute of reload and can loop. Start with
 the breaker and a generous sidecar window, then tighten once real failure data
 exists.
+
+> **Measured 2026-09-15 on a rented L4 (`docs/PHASE2_L4_RESULTS.md` §2b) — the
+> signature above does not fire for a realistic freeze, at any window.**
+>
+> `kill -STOP` on the vLLM `EngineCore` process (leaving the API server
+> process alive — precisely "the process is alive and the socket answers"
+> from the opening sentence of this section) was held for **~201 seconds**
+> with a genuinely pending chat request. Throughout: `generation_tokens_total`
+> stayed exactly flat (confirming the freeze was real), but
+> **`vllm:num_requests_waiting` never left 0** — the new request appears to
+> block before reaching whatever internal structure vLLM increments into
+> `waiting`, plausibly because admission itself needs a round trip to the same
+> frozen process. `bkn301_gateway_upstream_wedge_stall_seconds` therefore never
+> moved off 0, and neither would any window length: the precondition
+> `waiting > 0` is simply never satisfied by this failure shape.
+>
+> The breaker is **not** blind to this outage — it is just slower than
+> intended. `gateway/upstream/breaker.py`'s `FailureKind.READ_TIMEOUT` carries
+> weight 3, tripping at 2, so a request that eventually times out against
+> `UPSTREAM_READ_TIMEOUT_SEC` (120s) does count. But that needs **two** such
+> timeouts, ~240s+ with jitter — not the faster, complementary role item 1
+> above assigns it ("sees the stall first"). For this specific freeze shape,
+> the ordering is inverted: the metrics-based detector (item 2) never fires at
+> all, and the breaker (item 1) closes the loop later, via the exact
+> read-timeout path it was meant to beat.
+>
+> **Separately confirmed, and good news on its own:** a real engine survived a
+> 201-second freeze and resumed cleanly on `kill -CONT` — process state
+> normal within 3s, the pending request completed with correct content, and
+> `generation_tokens_total` advanced by exactly the requested token count. No
+> corruption from an extended freeze well past the 120s window this design
+> was built around.
+>
+> **Not yet built:** a complementary signal that does not depend on the frozen
+> engine's own counters, e.g. alerting on `bkn301_gateway_inflight_requests`
+> staying elevated with no matching completions, or a synthetic probe request
+> sent through the same code path a real chat request takes (not `/health` or
+> `/models`, both of which this freeze shape leaves answering normally). A
+> design decision, deliberately left for the next session rather than rushed
+> under a live rental.
 
 ---
 
@@ -102,7 +143,8 @@ other. The distinction is load-bearing, so it is tabulated rather than described
 |---|---|---|
 | Cold-start budget → `startupProbe.failureThreshold` | **MEASURED** | 45s warm, **153s cold** → `failureThreshold: 60` (300s) |
 | Liveness/readiness timings | derived from the above | unchanged |
-| **Wedge-detection window** → the sidecar's patience | **STILL AN ESTIMATE** | 120s, from §4, never validated |
+| **Wedge-detection window, false-positive side** (heavy legitimate load) | **MEASURED, 2026-09-15** | No flat-counter plateau beyond sub-poll-interval noise, even at 99.9% KV usage and a 27-deep queue for 40s straight — see `PHASE2_L4_RESULTS.md` §2a |
+| **Wedge-detection window, true-positive side** (does the signature fire on a real freeze) | **MEASURED, 2026-09-15 — it does not** | `waiting` never left 0 across a 201s freeze; window length is moot when the precondition never becomes true — see §4's correction above and `PHASE2_L4_RESULTS.md` §2b |
 
 **The cold-start figure corrects this document in the dangerous direction.** It
 previously specified `failureThreshold: 24` — a 120s budget against a 153s
@@ -112,14 +154,19 @@ replacement would also have started cold: a boot loop, not a slow start.
 purpose — a loose startup probe costs a slower failure verdict, a tight one costs
 a loop that never converges.
 
-**The wedge window was not measured and is still a guess.** PRD §7 Phase 1 listed
-it as a deliverable; the engine never wedged naturally during the session, and
-inducing one was not attempted. Nothing in the gateway is designed to be correct
-only if 120 is the right number: the breaker requires **two consecutive**
-confirmations before acting on the signal, and alerts on the first. The gateway
-now exports `bkn301_gateway_upstream_wedge_stall_seconds` **continuously**,
-including well below the threshold, specifically so that the first real incident
-replaces this estimate with a measurement.
+**The wedge window is no longer an unexamined guess, and the answer is not the
+one this section originally expected.** Two things were true before
+2026-09-15: the window's *value* (120s) was unvalidated, and — it turns out —
+so was the unstated assumption that the signature would fire on a real wedge
+at all. The false-positive side is now reassuring (§4's correction, heavy
+load never produces a multi-second flat counter). The true-positive side is
+not: for a real engine-process freeze with the API server alive, the
+signature's precondition (`waiting > 0`) never activates, so no window length
+would have caught it via this mechanism. The breaker still provides a
+backstop via `READ_TIMEOUT` weighting, just a slower one (~240s+, two
+timeouts) than the ~120s this section describes. See §4's correction and
+`PHASE2_L4_RESULTS.md` §2 for the full account, including what remains to be
+built.
 
 ---
 

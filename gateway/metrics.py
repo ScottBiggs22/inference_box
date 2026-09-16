@@ -73,6 +73,7 @@ REJECT_REASONS = frozenset({
     "model_not_allowed", "messages_required", "prompt_too_long",
     "max_tokens_invalid", "upstream_unreachable", "upstream_error",
     "upstream_bad_response", "upstream_stream_broken", "all_replicas_open",
+    "token_budget_exceeded", "concurrency_cap_exceeded",
 })
 
 requests_total = Counter(

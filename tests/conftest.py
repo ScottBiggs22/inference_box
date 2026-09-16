@@ -196,7 +196,8 @@ def live_gateway(live_stub, tmp_path):
 
     procs: list[subprocess.Popen] = []
 
-    def _start(*stub_args: str, gateway_env: dict | None = None) -> tuple[str, str]:
+    def _start(*stub_args: str, gateway_env: dict | None = None,
+               key_kwargs: dict | None = None) -> tuple[str, str]:
         upstream = live_stub(*stub_args)
 
         pepper = "live-gateway-test-pepper"
@@ -208,7 +209,10 @@ def live_gateway(live_stub, tmp_path):
         previous, settings.API_KEY_PEPPER = settings.API_KEY_PEPPER, pepper
         try:
             store = KeyStore(store_path)
-            plaintext, record = mint_key(scopes=["chat"], label="live-gateway")
+            # key_kwargs lets a test mint a key with a token_budget or
+            # max_concurrency (PRD §5.3) without inventing its own minting path.
+            plaintext, record = mint_key(scopes=["chat"], label="live-gateway",
+                                         **(key_kwargs or {}))
             store.add(record)
             store.save()
         finally:
