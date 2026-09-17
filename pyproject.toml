@@ -71,6 +71,12 @@ dev = [
   "pytest==8.3.2",
   "pytest-asyncio==0.23.8",
   "ruff==0.6.9",
+  # Generates the CA/server/client certificate chain tests/test_mtls.py builds
+  # to prove the mTLS wiring against a real TLS handshake. Already present
+  # transitively via pyjwt[crypto]; pinned explicitly here because test code
+  # imports it directly and a transitive version is not a version this repo
+  # controls.
+  "cryptography==49.0.0",
 ]
 
 [tool.ruff]

@@ -77,6 +77,44 @@ class TestScalarSettingsFromEnvironment:
         assert s.UPSTREAM_READ_TIMEOUT_SEC == 45.5
 
 
+class TestMTLSSettings:
+    """PRD §5.4 item 1. UPSTREAM_CLIENT_CERT is the only computed view here --
+    everything else is a plain string field covered by TestScalarSettingsFromEnvironment's
+    pattern.
+    """
+
+    def test_unset_is_none(self, monkeypatch):
+        monkeypatch.delenv("UPSTREAM_CLIENT_CERT_PATH", raising=False)
+        monkeypatch.delenv("UPSTREAM_CLIENT_KEY_PATH", raising=False)
+        assert Settings().UPSTREAM_CLIENT_CERT is None
+
+    def test_both_set_returns_the_pair(self, monkeypatch):
+        monkeypatch.setenv("UPSTREAM_CLIENT_CERT_PATH", "/certs/client.crt")
+        monkeypatch.setenv("UPSTREAM_CLIENT_KEY_PATH", "/certs/client.key")
+        assert Settings().UPSTREAM_CLIENT_CERT == ("/certs/client.crt", "/certs/client.key")
+
+    @pytest.mark.parametrize("set_cert,set_key", [(True, False), (False, True)])
+    def test_half_set_raises(self, monkeypatch, set_cert, set_key):
+        """A typo'd or partially-templated env var must fail loud, not connect
+        with no client certificate at all."""
+        monkeypatch.delenv("UPSTREAM_CLIENT_CERT_PATH", raising=False)
+        monkeypatch.delenv("UPSTREAM_CLIENT_KEY_PATH", raising=False)
+        if set_cert:
+            monkeypatch.setenv("UPSTREAM_CLIENT_CERT_PATH", "/certs/client.crt")
+        if set_key:
+            monkeypatch.setenv("UPSTREAM_CLIENT_KEY_PATH", "/certs/client.key")
+        with pytest.raises(ValueError, match="both be set"):
+            _ = Settings().UPSTREAM_CLIENT_CERT
+
+    def test_ca_bundle_path_from_env(self, monkeypatch):
+        monkeypatch.setenv("UPSTREAM_CA_BUNDLE_PATH", "/certs/ca.crt")
+        assert Settings().UPSTREAM_CA_BUNDLE_PATH == "/certs/ca.crt"
+
+    def test_ca_bundle_path_defaults_empty(self, monkeypatch):
+        monkeypatch.delenv("UPSTREAM_CA_BUNDLE_PATH", raising=False)
+        assert Settings().UPSTREAM_CA_BUNDLE_PATH == ""
+
+
 class TestNoCloudSdk:
     """PRD §4.4(d) / R10: the image must carry no cloud-specific dependency.
 

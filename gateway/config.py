@@ -123,6 +123,26 @@ class Settings(BaseSettings):
     UPSTREAM_READ_TIMEOUT_SEC: float = Field(
         default_factory=lambda: float(os.getenv("UPSTREAM_READ_TIMEOUT_SEC", "120.0")))
 
+    # mTLS gateway->vLLM (PRD §5.4 item 1, §5.2's "private subnet, mTLS" hop).
+    # All three empty by default so Phase 1's plain-HTTP stub keeps working
+    # unmodified -- these only take effect for an https:// UPSTREAM_URLS entry;
+    # httpx's TLS config is inert on a plain http:// connection.
+    #
+    # Paths, not inline PEM: the platform injects secrets as files (a mounted
+    # Secret volume) or as env vars, and a private key is the one setting here
+    # where "arrives as a file" has to be supported, so path is the one form
+    # that works either way.
+    UPSTREAM_CLIENT_CERT_PATH: str = Field(
+        default_factory=lambda: os.getenv("UPSTREAM_CLIENT_CERT_PATH", ""))
+    UPSTREAM_CLIENT_KEY_PATH: str = Field(
+        default_factory=lambda: os.getenv("UPSTREAM_CLIENT_KEY_PATH", ""))
+    # Verifies vLLM's server certificate. Left unset, httpx falls back to the
+    # system trust store, which is the wrong default here: a private-subnet
+    # replica's certificate is signed by a private CA that no public trust
+    # store carries, so a real mTLS deployment must set this explicitly.
+    UPSTREAM_CA_BUNDLE_PATH: str = Field(
+        default_factory=lambda: os.getenv("UPSTREAM_CA_BUNDLE_PATH", ""))
+
     # ── Resilience ───────────────────────────────────────────────────────────
     # A breaker with no off switch is a new way to have an outage. When false,
     # pick() is plain round-robin and nothing is ever withheld from routing.
@@ -254,6 +274,24 @@ class Settings(BaseSettings):
     @property
     def ALLOWED_MODELS(self) -> list[str]:  # noqa: N802 - matches the env var name
         return _csv(self.ALLOWED_MODELS_CSV)
+
+    @property
+    def UPSTREAM_CLIENT_CERT(self) -> tuple[str, str] | None:  # noqa: N802
+        """(cert, key) to present to vLLM, or None if mTLS is not configured.
+
+        Half-set -- one path present, the other empty -- is almost certainly a
+        typo'd or partially-templated env var rather than an intentional
+        choice, so it fails loud here rather than silently connecting with no
+        client certificate at all.
+        """
+        cert, key = self.UPSTREAM_CLIENT_CERT_PATH, self.UPSTREAM_CLIENT_KEY_PATH
+        if bool(cert) != bool(key):
+            raise ValueError(
+                "UPSTREAM_CLIENT_CERT_PATH and UPSTREAM_CLIENT_KEY_PATH must "
+                "both be set, or both left empty -- half a client certificate "
+                "cannot present"
+            )
+        return (cert, key) if cert else None
 
 
 settings = Settings()

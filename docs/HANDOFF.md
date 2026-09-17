@@ -6,35 +6,29 @@ document is *state*, not design.
 
 ---
 
-## 0. Start here — everything in §5d is done but uncommitted
+## 0. Start here — mTLS is done but uncommitted; PRD §7 Phase 2 is now fully closed
 
-All of §5d's work (budgeting + the GPU session) is finished, verified, and
-written up — but sitting in the working tree on `phase2-metrics-breaker`,
-**not committed**. A new session's first move should be `git status` /
-`git diff --stat HEAD` to see this directly, then either commit it or ask
-before touching anything else. As of this writing:
+§5d's work (budgeting + the GPU session) was committed by the user in a single
+squashed commit (`5baa2ba`) between sessions. This session did the last PRD §7
+Phase 2 item, **mTLS gateway→vLLM** (§5e), and it is sitting in the working
+tree on `phase2-metrics-breaker`, **not committed**. A new session's first move
+should be `git status` / `git diff --stat HEAD` to see this directly, then
+either commit it or ask before touching anything else. As of this writing:
 
 ```
-modified:   docs/HANDOFF.md, docs/PROBE_CONTRACT.md, docs/INFERENCE_SERVICE_PRD.md
-modified:   gateway/auth/__init__.py, gateway/auth/keys.py, gateway/metrics.py,
-            gateway/routes/chat.py, tests/conftest.py
-untracked:  docs/PHASE2_L4_RESULTS.md, gateway/quota.py, tests/test_quota.py,
-            results/phase2-l4-wedge-argon2/
+modified:   .env.example, docs/INFERENCE_SERVICE_PRD.md, gateway/config.py,
+            gateway/upstream/client.py, pyproject.toml, tests/test_config.py
+untracked:  tests/test_mtls.py
 ```
 
-Note `docs/INFERENCE_SERVICE_PRD.md`'s diff is **not mine** — it's the
-pre-existing rev 4 §2.1 KPI edit the user made before this session started;
-leave it as-is when staging, don't attribute it to the budgeting/GPU work.
+**237 tests pass, ruff clean, both image targets (`runtime`, `dev`) still
+build** (confirmed at the end of the session that produced this diff —
+re-run `pytest` before committing if picking this up fresh).
 
-**226 tests pass, ruff clean** (confirmed at the end of the session that
-produced this diff — re-run `pytest` before committing if picking this up
-fresh, since nothing has been re-verified since).
-
-**The open decision, not yet made:** commit this work, then pick one of —
-(a) the wedge-detection follow-up (§7, a complementary signal that doesn't
-depend on the frozen engine's own counters — recommended, no GPU needed), or
-(b) mTLS gateway→vLLM (§6 item 4, the only remaining PRD §7 Phase 2 item).
-Both are gateway-only, laptop-side work.
+**The open decision, not yet made:** commit this work, then do the
+wedge-detection follow-up (§7 — a complementary signal that doesn't depend on
+the frozen engine's own counters, the one item §5d left open and the only
+thing left on the gateway side that isn't already shipped). No GPU needed.
 
 ---
 
@@ -524,7 +518,67 @@ destroyed, SSH key removed, volumes confirmed empty.
 
 ---
 
-## 6. What is deliberately not built — and what Phase 1 changed about it
+## 5e. mTLS gateway→vLLM — done, 2026-09-15. The last PRD §7 Phase 2 item.
+
+Built on the laptop, no GPU needed. Scoped per PRD §4.8 and §6 item 4: code,
+config surface, and a self-signed-cert test — the security review still has to
+run against the real deployment path.
+
+**Config:** three new env vars in `gateway/config.py` —
+`UPSTREAM_CLIENT_CERT_PATH`, `UPSTREAM_CLIENT_KEY_PATH`,
+`UPSTREAM_CA_BUNDLE_PATH` — all empty by default so Phase 1's plain-HTTP stub
+is unaffected. A computed `UPSTREAM_CLIENT_CERT` property fails loud if only
+one of the cert/key pair is set, rather than silently connecting with no
+client certificate. Documented in `.env.example`.
+
+**Wiring:** one `httpx.AsyncClient` (`UpstreamPool.start()`) backs every
+outbound call the gateway makes — chat completions, health/reclose probes,
+and the `/metrics` scraper, which is handed `pool.client` directly — so
+wiring TLS in this one place covers all three with nothing able to bypass it.
+
+**A real bug, caught by the self-signed-cert test doing its job.** The first
+wiring attempt passed `cert=settings.UPSTREAM_CLIENT_CERT` and
+`verify=settings.UPSTREAM_CA_BUNDLE_PATH or True` straight to
+`httpx.AsyncClient`, mirroring the obvious reading of httpx's own API. Against
+a real TLS server requiring a client certificate
+(`tests/test_mtls.py`'s `_MTLSEchoServer`, a bare `ssl`-wrapped socket, not
+uvicorn — see below), the positive-path test failed with
+`TLSV13_ALERT_CERTIFICATE_REQUIRED`: no client certificate was sent at all.
+Root cause in `httpx._config.create_ssl_context` (0.28.1): when `verify` is a
+string path, the function **returns before it ever reaches the code that
+applies `cert=`**. So the exact combination `UPSTREAM_CA_BUNDLE_PATH` +
+`UPSTREAM_CLIENT_CERT` both set — the realistic private-CA mTLS case, and the
+whole reason this item exists — silently sent no client certificate, with no
+error and no warning that it had been dropped. Fixed by building the
+`ssl.SSLContext` by hand in `_upstream_ssl_context()` (`load_verify_locations`
++ `load_cert_chain`, passed as `verify=<context>` with no `cert=` at all),
+which is what httpx's own deprecation message for `cert=` recommends. This
+would not have been caught by a test that only checked "the code compiles and
+passes the right-looking kwargs to httpx" rather than a real handshake against
+a server that actually enforces the requirement.
+
+**Why a bare `ssl`-wrapped socket for the test server, not the stub under
+uvicorn.** The first version ran `stub.server:app` under real `uvicorn` with
+`--ssl-certfile`/`--ssl-ca-certs`/`--ssl-cert-reqs 2`. That reproduced a
+handshake failure (`RemoteProtocolError`/connection-reset) against uvicorn's
+asyncio TLS transport requiring a client certificate on this environment
+(uvicorn 0.30.1, httpx 0.28.1/httpcore 1.0.9, Python 3.12) that plain `curl`
+against the identical certificate pair did not hit — an unrelated ASGI-server
+compatibility question with no bearing on what needed proving. Switched to a
+blocking `ssl.SSLContext`-wrapped socket in a background thread: Python's
+stdlib `ssl` module performs the full handshake, including client-certificate
+verification, synchronously inside `wrap_socket()`, which sidesteps uvicorn's
+asyncio transport entirely and is the most-tested path this functionality has.
+Certificates (a CA, a server leaf, a client leaf, and a second unrelated CA
+for the wrong-CA negative test) are generated fresh per test with
+`cryptography`, added as an explicit **dev** dependency
+(`pyproject.toml`) even though already present transitively via
+`pyjwt[crypto]` — pinned because test code now imports it directly.
+
+**226 → 237 tests** (11 new: 6 in `tests/test_config.py` for the new settings,
+5 in `tests/test_mtls.py`), ruff clean, both image targets still build.
+`cryptography` stays out of the shipping image — it's a dev-only dependency,
+and the runtime image installs `pip install .` with no extras.
 
 All PRD §7 Phase 2. **Agreed order is dependency order, not the order §7 lists
 them:** `/metrics` → breaker → budgets → mTLS. Each seam already exists, and
@@ -596,13 +650,17 @@ right after headers instead of after the stream finished) and the streaming
 test caught it before being reverted — this class of bug is invisible to
 `TestClient`, which collects a streaming response before returning it.
 
-### 4. mTLS gateway→vLLM
+### 4. ~~mTLS gateway→vLLM~~ — DONE, §5e
 
 Env-var cert/key/CA paths only (no cloud SDK — `tests/test_config.py`
-enforces), passed to `httpx.AsyncClient(cert=..., verify=...)` in
-`UpstreamPool.start()`. Scoped honestly: code, config surface and a
-self-signed-cert test. PRD §4.8 is explicit that the security review runs
-against the real deployment path, so this is not *validated* on a laptop.
+enforces), wired into the one `httpx.AsyncClient` every outbound call shares
+(`UpstreamPool.start()`'s `_upstream_ssl_context()`). Scoped honestly: code,
+config surface and a self-signed-cert test. PRD §4.8 is explicit that the
+security review runs against the real deployment path, so this is not
+*validated* on a laptop. **This was the last item on PRD §7 Phase 2's list —
+that phase's gateway work is now fully built**, modulo the wedge-detection
+follow-up §5d and §7 both flag as real remaining work, not a Phase 2 checklist
+item in its own right.
 
 ### Still open elsewhere
 
@@ -618,20 +676,18 @@ with no fetch script, so B4's fix does not reproduce from a clean clone.
 
 ## 7. Next actions, in order
 
-**Phase 1 is complete (§5b). `/metrics`, the breaker, retries, per-key
-budgets/concurrency caps, and both measurements that were blocked on GPU
-availability are all complete (§5c, §5d).** The only item left from PRD §7
-Phase 2's list is **mTLS gateway→vLLM**.
+**Phase 1 is complete (§5b). PRD §7 Phase 2's entire gateway list —
+`/metrics`, the breaker, retries, per-key budgets/concurrency caps, and now
+mTLS (§5c, §5d, §5e) — is fully built.** Nothing is left on that list.
 
-**One follow-up from §5d is real gateway work, not measurement:** a
-complementary wedge-detection signal that does not depend on the frozen
-engine's own counters (§5d found the documented one — `waiting > 0` — never
-fires for a real engine-process freeze, at any window). Candidates already
-named: alert on `bkn301_gateway_inflight_requests` staying elevated with no
-matching completions, or a synthetic probe sent through the same code path a
-real chat request takes. This is a design decision worth making deliberately,
-not a one-line fix — recommend doing it before or alongside mTLS, since it is
-gateway code either way and does not need a GPU.
+**One follow-up from §5d is real gateway work, not measurement, and is now the
+next thing to build:** a complementary wedge-detection signal that does not
+depend on the frozen engine's own counters (§5d found the documented one —
+`waiting > 0` — never fires for a real engine-process freeze, at any window).
+Candidates already named: alert on `bkn301_gateway_inflight_requests` staying
+elevated with no matching completions, or a synthetic probe sent through the
+same code path a real chat request takes. This is a design decision worth
+making deliberately, not a one-line fix. No GPU needed.
 
 <details><summary>Phase 1 items, now closed — kept for the record</summary>
 

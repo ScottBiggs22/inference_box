@@ -20,12 +20,27 @@ because retro-fitting a replica abstraction into a request path is far more
 invasive than starting with one. `pick()` is round-robin today; health-aware
 selection and the circuit breaker (PRD §5.3) plug in here without touching the
 routes.
+
+mTLS TO vLLM
+============
+One `httpx.AsyncClient` (`start()`, below) backs every outbound call this
+process makes -- chat completions, health/reclose probes, and the /metrics
+scraper in `metrics_scraper.py`, which is handed `pool.client` directly. So
+wiring TLS in one place (PRD §5.4 item 1, `_upstream_ssl_context()`) covers all
+three; there is no second HTTP client anywhere in this process that could
+bypass it. See `gateway/config.py`'s `UPSTREAM_CLIENT_CERT`/
+`UPSTREAM_CA_BUNDLE_PATH` for the env-var surface, `_upstream_ssl_context`'s own
+docstring for why the TLS context is built by hand rather than through httpx's
+`cert=`/`verify=<str>` params, and PRD §4.8 for why this is scoped to code +
+config + a self-signed-cert test rather than something validated on a laptop:
+the security review has to run against the real deployment path.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import random
+import ssl
 import time
 
 import httpx
@@ -35,6 +50,32 @@ from gateway.config import settings
 from gateway.upstream.breaker import BreakerRegistry, FailureKind
 
 logger = logging.getLogger(__name__)
+
+
+def _upstream_ssl_context() -> ssl.SSLContext | bool:
+    """The TLS config for the upstream connection: True (default trust store,
+    no client cert) if mTLS is not configured, else a real ssl.SSLContext.
+
+    NOT httpx's own `cert=`/`verify=<str>` convenience params, and this is not
+    a style choice: `httpx._config.create_ssl_context` (0.28.1) returns for a
+    string `verify` BEFORE it ever reaches the code that applies `cert=`, so
+    passing both together -- which is exactly `UPSTREAM_CA_BUNDLE_PATH` plus
+    `UPSTREAM_CLIENT_CERT` set, the realistic private-CA mTLS case -- silently
+    sends no client certificate at all. No error, no warning about the
+    cert being dropped; the handshake just completes without one. Caught by
+    tests/test_mtls.py's positive-path test failing with
+    `TLSV13_ALERT_CERTIFICATE_REQUIRED` against a server that demands one.
+    Building the context by hand is what httpx's own deprecation message for
+    `cert=` recommends.
+    """
+    ca_bundle = settings.UPSTREAM_CA_BUNDLE_PATH
+    client_cert = settings.UPSTREAM_CLIENT_CERT
+    if not ca_bundle and client_cert is None:
+        return True
+    ctx = ssl.create_default_context(cafile=ca_bundle or None)
+    if client_cert is not None:
+        ctx.load_cert_chain(*client_cert)
+    return ctx
 
 # BOUND: 1 RETRY, 2 ATTEMPTS TOTAL.
 #
@@ -183,6 +224,11 @@ class UpstreamPool:
             headers["Authorization"] = f"Bearer {settings.UPSTREAM_API_KEY}"
         self._client = httpx.AsyncClient(
             headers=headers,
+            # mTLS to vLLM (PRD §5.4 item 1). See _upstream_ssl_context's
+            # docstring for why this is a hand-built ssl.SSLContext rather
+            # than httpx's own cert=/verify=<str> params. Inert for a plain
+            # http:// UPSTREAM_URLS entry -- Phase 1's stub is unaffected.
+            verify=_upstream_ssl_context(),
             timeout=httpx.Timeout(
                 connect=settings.UPSTREAM_CONNECT_TIMEOUT_SEC,
                 read=settings.UPSTREAM_READ_TIMEOUT_SEC,

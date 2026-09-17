@@ -1217,6 +1217,21 @@ the stub, then pointed at the dev GPU.
 - [ ] Circuit breaker + health-based routing (single replica for now, but the
       router interface lands here).
 - [ ] mTLS gateway→vLLM.
+      **Done, 2026-09-15.** `gateway/config.py`'s `UPSTREAM_CLIENT_CERT_PATH`/
+      `UPSTREAM_CLIENT_KEY_PATH`/`UPSTREAM_CA_BUNDLE_PATH`, wired into the one
+      `httpx.AsyncClient` every outbound call shares
+      (`gateway/upstream/client.py`'s `_upstream_ssl_context()`), so chat
+      traffic, health/reclose probes and the `/metrics` scraper are all
+      covered by the same TLS config with nothing able to bypass it. A
+      self-signed-cert test (`tests/test_mtls.py`) proves the wiring against a
+      real TLS handshake requiring a client certificate — and caught a real
+      bug doing it: httpx 0.28.1's `cert=`/`verify=<str>` convenience params
+      silently drop the client certificate whenever a CA bundle path is also
+      given, which is exactly the private-CA mTLS case this item exists for.
+      Fixed by building the `ssl.SSLContext` by hand, which is what httpx's
+      own deprecation message for `cert=` recommends. Scoped honestly per
+      §4.8: code, config surface, and this test only — the security review
+      still has to run against the real deployment path.
 - [ ] Measure prefix-cache hit rate to inform the §3.6 LMCache decision.
       **Done in Phase 1** (98.5%, `PHASE1_RESULTS.md` §5); what remains is
       §2.1 P1 — re-measuring it against *real* prompt assembly rather than
